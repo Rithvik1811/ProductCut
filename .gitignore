@@ -17,3 +17,7 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# De-risk test assets/outputs (local sanity checks, not project artifacts)
+backend/derisk/photos/
+backend/derisk/outputs/

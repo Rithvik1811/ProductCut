@@ -34,10 +34,10 @@ These are shared contracts — draft together, commit as versioned files (schema
 *Goal: prove both external APIs work before writing orchestration code. Do not skip.*
 
 ### KR
-- [ ] `[BRAIN]` Get Qwen Cloud/DashScope creds working; trivial smoke-test calls to Qwen-Max, Qwen-VL, Qwen-TTS/CosyVoice; record model IDs/base URL/auth in `.env.example`
-- [ ] `[BRAIN]` One-off manual test of the Product Truth Extractor prompt against 3-4 real product photos — confirm it returns 4+ *specific*, non-generic facts
-- [ ] `[BODY]` Provision Alibaba Cloud **ECS instance**; provision **OSS bucket**
-- [ ] `[JOINT]` Draft **C1** (state schema)
+- [x] `[BRAIN]` Get Qwen Cloud/DashScope creds working; trivial smoke-test calls to Qwen-Max, Qwen-VL, Qwen-TTS/CosyVoice; record model IDs/base URL/auth in `.env.example`
+- [x] `[BRAIN]` One-off manual test of the Product Truth Extractor prompt against 3-4 real product photos — confirm it returns 4+ *specific*, non-generic facts
+- [x] `[BODY]` Provision Alibaba Cloud **ECS instance**; provision **OSS bucket**
+- [x] `[JOINT]` Draft **C1** (state schema)
 
 ### RR
 - [ ] `[BRAIN]` **Critical de-risk task:** Wan/HappyHorse raw quality test — image-to-video only, 3-4 real product photos, 2-3 camera moves (push_in/orbit/static), a couple prompt styles. Save outputs, write an honest **go/no-go verdict**. Note latency + hard-failure behavior.
@@ -55,7 +55,7 @@ These are shared contracts — draft together, commit as versioned files (schema
 *Goal: a scored, cross-pollinated winning script grounded in real product facts, zero video-gen dependency.*
 
 ### KR
-- [ ] `[BRAIN]` **Product Truth Extractor** node (Qwen-VL, 6-10 specific facts w/ `truth_id`/`category`, reject-and-reprompt heuristic on generic facts)
+- [x] `[BRAIN]` **Product Truth Extractor** node (Qwen-VL, 6-10 specific facts w/ `truth_id`/`category`, reject-and-reprompt heuristic on generic facts) — verified against real photos + automated tests (`backend/tests/test_product_truth_extractor.py`, `test_graph_build.py`)
 - [ ] `[BRAIN]` **Concept Agent** (4 script variants, forced-distinct framework/hook/emotional-trigger, beat timestamps, `grounding_truth_ids`)
 - [ ] `[BRAIN]` Critic Chain: **Hook-Checker** + **Pacing-Checker** (deterministic timing math)
 - [ ] `[BODY]` Wire the intake form (from Phase 0) to the real ingest endpoint

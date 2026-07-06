@@ -1,10 +1,5 @@
 """
-Phase 0 scaffold: a bare LangGraph graph with a single no-op node.
-
-This exists to prove the orchestration plumbing end-to-end (graph compile +
-checkpointer + astream_events) before any real agents are wired in. The single
-`ping` node does nothing meaningful — it just echoes the job_id back into the
-state so there is an observable state update to stream.
+Phase 1: LangGraph graph -- Product Truth Extractor -> Concept Agent.
 
 Checkpointer selection is graceful:
   - if DATABASE_URL is set  -> AsyncPostgresSaver (real durable checkpoints)
@@ -17,6 +12,14 @@ that exact error against the real RDS instance. AsyncPostgresSaver implements
 the async checkpointer interface properly.
 
 Do NOT import/modify graph.state's schema shape — we only consume it.
+
+NOTE: there is no Ingest node yet, so nothing populates `product_photos` or
+`brief` in state before this graph runs. Driving a real run through the
+/ws/{job_id} endpoint will fail with a KeyError on `state["product_photos"]`
+(then `state["brief"]`) until the job-submission-form -> ingest-endpoint ->
+OSS-upload path exists (Phase 1, still open on both KR's and RR's task
+lists). Use `derisk/test_truth_extractor.py` and `derisk/test_concept_agent.py`
+to exercise each agent standalone until then.
 """
 from __future__ import annotations
 
@@ -28,27 +31,21 @@ from typing import Optional
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from agents.concept_agent import concept_agent_node
+from agents.product_truth_extractor import product_truth_extractor_node
 from graph.state import ProductCutState
 
 logger = logging.getLogger("productcut.graph")
 
 
-def ping_node(state: ProductCutState) -> dict:
-    """No-op node: echo the job_id back so there's an observable state update.
-
-    Returns a partial state update (LangGraph merges it into the channel state).
-    """
-    job_id = state.get("job_id", "unknown")
-    logger.info("ping_node invoked for job_id=%s", job_id)
-    return {"reasoning_trace": f"ping ok for job_id={job_id}"}
-
-
 def _build_uncompiled() -> StateGraph:
-    """Construct the (uncompiled) single-node graph."""
+    """Construct the (uncompiled) graph."""
     builder = StateGraph(ProductCutState)
-    builder.add_node("ping", ping_node)
-    builder.add_edge(START, "ping")
-    builder.add_edge("ping", END)
+    builder.add_node("product_truth_extractor", product_truth_extractor_node)
+    builder.add_node("concept_agent", concept_agent_node)
+    builder.add_edge(START, "product_truth_extractor")
+    builder.add_edge("product_truth_extractor", "concept_agent")
+    builder.add_edge("concept_agent", END)
     return builder
 
 

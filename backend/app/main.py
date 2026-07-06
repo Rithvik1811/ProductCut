@@ -1,26 +1,33 @@
 """
-Phase 0 scaffold: FastAPI app that streams LangGraph events over a WebSocket.
+FastAPI app that streams LangGraph events over a WebSocket.
 
 Endpoints:
   GET  /health          -> basic liveness + which checkpointer is active
-  WS   /ws/{job_id}     -> runs the bare graph and forwards each astream_events
+  WS   /ws/{job_id}     -> runs the graph and forwards each astream_events
                            event to the client as a JSON envelope.
 
-The WebSocket envelope shape below mirrors the project's planned "C2" event
-schema, which is NOT frozen yet. It is intentionally a simple placeholder:
-    {"type": ..., "job_id": ..., "ts": ..., "payload": ...}
-Do not treat it as a stable contract.
+Two event families reach the client, both using the same outer envelope
+`{"type": ..., "job_id": ..., "ts": ..., "payload": ...}`:
+  - Real C2 business events (graph.events.EventType), dispatched by agent
+    nodes via adispatch_custom_event and unwrapped here via build_event.
+    This IS the frozen contract (docs/C2_EVENT_SCHEMA.md).
+  - Everything else (raw LangGraph lifecycle events like on_chain_start) is
+    forwarded as an untyped passthrough for debugging -- NOT part of C2,
+    do not build dashboard panels against these.
 """
 from __future__ import annotations
 
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, get_args
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from graph.build import build_graph
+from graph.events import EventType, build_event
+
+_KNOWN_C2_TYPES = frozenset(get_args(EventType))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,9 +93,24 @@ async def ws_run(websocket: WebSocket, job_id: str) -> None:
         )
 
         # astream_events surfaces the internal event stream of the graph run.
+        # on_custom_event entries are C2 business events dispatched by agent
+        # nodes (adispatch_custom_event) -- unwrap those into a real C2
+        # envelope via graph.events.build_event instead of the generic
+        # passthrough used for raw LangGraph lifecycle events.
         async for event in graph.astream_events(
             initial_state, config=config, version="v2"
         ):
+            if event.get("event") == "on_custom_event" and event.get("name") in _KNOWN_C2_TYPES:
+                c2_type = event["name"]
+                c2_payload = _jsonable(event.get("data"))
+                await websocket.send_json(build_event(c2_type, job_id, c2_payload))
+                continue
+            elif event.get("event") == "on_custom_event":
+                logger.warning(
+                    "Custom event %r is not a known C2 type; "
+                    "forwarding as generic passthrough instead.", event.get("name"),
+                )
+
             await websocket.send_json(
                 _envelope(
                     event.get("event", "unknown"),

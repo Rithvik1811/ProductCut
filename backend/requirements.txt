@@ -15,6 +15,8 @@ websockets>=13.1
 python-multipart>=0.0.20   # required by FastAPI for file (product photo) uploads
 pydantic>=2.10.4
 pydantic-settings>=2.7.1
+typing_extensions>=4.12.2   # NotRequired in graph/state.py, graph/events.py -- imported
+                            # directly, was only ever a transitive dep before
 
 # --- Qwen Cloud / DashScope (LLM, vision, TTS, video-gen) -------------------
 openai>=1.58.1              # used against DashScope's OpenAI-compatible endpoint (chat + Qwen-VL)
