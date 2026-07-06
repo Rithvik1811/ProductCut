@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+claudemem.md
 
 # Python
 __pycache__/
