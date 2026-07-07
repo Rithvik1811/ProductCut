@@ -14,6 +14,7 @@ conflate two different failure classes.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from openai import APIConnectionError, APITimeoutError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -38,7 +39,9 @@ dashscope_retry = retry(
 
 
 @dashscope_retry
-async def create_completion(client, *, model: str, messages: list[dict]) -> str:
+async def create_completion(
+    client, *, model: str, messages: list[dict], temperature: Optional[float] = None
+) -> str:
     """The one place every agent should call the DashScope chat endpoint.
 
     Uses streaming rather than a single blocking call. Empirically, non-streaming
@@ -49,8 +52,17 @@ async def create_completion(client, *, model: str, messages: list[dict]) -> str:
     large response, which avoids that failure mode. Returns the assembled text
     content directly (not a response object) -- callers don't need chunk-level
     access, just the final string to hand to _parse_json_response.
+
+    `temperature` is forwarded to the endpoint ONLY when explicitly set, so
+    existing callers that omit it keep the model default's behaviour unchanged.
+    The Shot-List Agent (§5.6) is the first caller to need it: its Call A is a
+    low-temperature extraction pass and its Call B a warmer grounded-creative
+    pass, so the two calls must be able to request different temperatures.
     """
-    stream = await client.chat.completions.create(model=model, messages=messages, stream=True)
+    create_kwargs = {"model": model, "messages": messages, "stream": True}
+    if temperature is not None:
+        create_kwargs["temperature"] = temperature
+    stream = await client.chat.completions.create(**create_kwargs)
     parts: list[str] = []
     async for chunk in stream:
         if not chunk.choices:
