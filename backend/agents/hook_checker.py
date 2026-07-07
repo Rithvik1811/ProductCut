@@ -31,7 +31,7 @@ from typing import Optional, TypedDict
 from openai import AsyncOpenAI
 
 from agents._retry import create_completion
-from graph.state import ScriptVariant
+from graph.state import ProductCutState, ScriptVariant
 
 logger = logging.getLogger("productcut.agents.hook_checker")
 
@@ -194,3 +194,9 @@ async def score_hooks(
     finally:
         if own_client:
             await client.close()
+
+
+async def hook_checker_node(state: ProductCutState) -> dict:
+    """LangGraph node wrapper: scores each variant's hook. Runs in parallel with the other 4 checkers (see graph/build.py's fan-out from concept_agent)."""
+    scores = await score_hooks(state["script_variants"])
+    return {"hook_scores": scores}

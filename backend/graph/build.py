@@ -1,5 +1,12 @@
 """
-Phase 1: LangGraph graph -- Product Truth Extractor -> Concept Agent.
+Phase 1: LangGraph graph -- Product Truth Extractor -> Concept Agent -> 5 parallel
+Critic Chain checkers -> Meta-Critic -> Merge Coherence Validator -> (Copy Editor
+loop-back | Meta-Critic swap retry | fallback) -> winning_script finalized.
+
+The full Critic Chain (§5.4) is now wired end to end, including the Merge
+Coherence Validator (§5.4.7) and Copy Editor (§5.4.8). `winning_script` is set
+by merge_validator_node on a pass or a terminal fallback -- nothing downstream
+of it (Treatment Agent, Voiceover) is wired yet.
 
 Checkpointer selection is graceful:
   - if DATABASE_URL is set  -> AsyncPostgresSaver (real durable checkpoints)
@@ -31,7 +38,14 @@ from typing import Optional
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from agents.body_checker import body_checker_node
 from agents.concept_agent import concept_agent_node
+from agents.copy_editor import copy_editor_node
+from agents.cta_tone_checkers import cta_checker_node, tone_checker_node
+from agents.hook_checker import hook_checker_node
+from agents.merge_validator import merge_validator_node, route_after_merge_validation
+from agents.meta_critic import meta_critic_node
+from agents.pacing_checker import pacing_checker_node
 from agents.product_truth_extractor import product_truth_extractor_node
 from graph.state import ProductCutState
 
@@ -43,9 +57,44 @@ def _build_uncompiled() -> StateGraph:
     builder = StateGraph(ProductCutState)
     builder.add_node("product_truth_extractor", product_truth_extractor_node)
     builder.add_node("concept_agent", concept_agent_node)
+    builder.add_node("hook_checker", hook_checker_node)
+    builder.add_node("pacing_checker", pacing_checker_node)
+    builder.add_node("body_checker", body_checker_node)
+    builder.add_node("cta_checker", cta_checker_node)
+    builder.add_node("tone_checker", tone_checker_node)
+    builder.add_node("meta_critic", meta_critic_node)
+
     builder.add_edge(START, "product_truth_extractor")
     builder.add_edge("product_truth_extractor", "concept_agent")
-    builder.add_edge("concept_agent", END)
+
+    # Fan-out: concept_agent's 4 script variants get scored by 5 parallel specialists.
+    builder.add_edge("concept_agent", "hook_checker")
+    builder.add_edge("concept_agent", "pacing_checker")
+    builder.add_edge("concept_agent", "body_checker")
+    builder.add_edge("concept_agent", "cta_checker")
+    builder.add_edge("concept_agent", "tone_checker")
+
+    # Fan-in: Meta-Critic waits for all 5 before reconciling (LangGraph superstep semantics).
+    builder.add_edge("hook_checker", "meta_critic")
+    builder.add_edge("pacing_checker", "meta_critic")
+    builder.add_edge("body_checker", "meta_critic")
+    builder.add_edge("cta_checker", "meta_critic")
+    builder.add_edge("tone_checker", "meta_critic")
+
+    builder.add_node("merge_validator", merge_validator_node)
+    builder.add_node("copy_editor", copy_editor_node)
+    builder.add_edge("meta_critic", "merge_validator")
+    builder.add_edge("copy_editor", "merge_validator")
+    builder.add_conditional_edges(
+        "merge_validator",
+        route_after_merge_validation,
+        {
+            "finalize": END,
+            "copy_editor": "copy_editor",
+            "meta_critic": "meta_critic",
+            "fallback": END,
+        },
+    )
     return builder
 
 

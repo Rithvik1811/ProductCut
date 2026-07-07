@@ -23,7 +23,10 @@ Scope note: the Phase 0 scaffold in app/main.py also emits `run.started` /
 (`on_chain_start`, etc.). Those are transport/lifecycle scaffolding, NOT part of
 this frozen business-event contract, and are deliberately excluded here.
 
-version: 1
+version: 2
+  - v2: added "merge_validated" event type + MergeValidatedPayload (§5.4.7's
+        dashed `CV -.-> FE` streaming edge in the architecture diagram) so a
+        merge-candidate retry/fallback is visible on the live stream, not hidden.
 """
 from __future__ import annotations
 
@@ -45,7 +48,8 @@ from graph.state import (
 )
 
 # ---------------------------------------------------------------------------
-# Envelope + the exact 10 event-type strings named in docs/BUILD_TASKS.md (C2).
+# Envelope + event-type strings. The original 10 are named in docs/BUILD_TASKS.md
+# (C2); "merge_validated" (v2) is an additive 11th, not part of that original list.
 # ---------------------------------------------------------------------------
 
 EventType = Literal[
@@ -59,6 +63,7 @@ EventType = Literal[
     "interrupt_requested",
     "edit_routed",
     "job_complete",
+    "merge_validated",
 ]
 
 
@@ -135,6 +140,14 @@ class JobCompletePayload(TypedDict):
     voiceover: NotRequired[Voiceover]
 
 
+class MergeValidatedPayload(TypedDict):
+    """Merge Coherence Validator (5.4.7) scored a merge candidate -- the dashed
+    CV -.-> FE streaming edge. Fires once per attempt so a retry/fallback is part
+    of the visible live trace, not hidden."""
+    result: dict
+    attempt_number: int
+
+
 EventPayload = Union[
     NodeStartedPayload,
     TruthExtractedPayload,
@@ -146,6 +159,7 @@ EventPayload = Union[
     InterruptRequestedPayload,
     EditRoutedPayload,
     JobCompletePayload,
+    MergeValidatedPayload,
 ]
 
 
@@ -201,5 +215,6 @@ __all__ = [
     "InterruptRequestedPayload",
     "EditRoutedPayload",
     "JobCompletePayload",
+    "MergeValidatedPayload",
     "build_event",
 ]

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from graph.state import ScriptVariant
+from graph.state import ProductCutState, ScriptVariant
 
 MIN_SCORE = 1
 MAX_SCORE = 5
@@ -100,3 +100,9 @@ def check_pacing(variant: ScriptVariant) -> PacingResult:
 def check_pacing_all(script_variants: list[ScriptVariant]) -> dict[str, PacingResult]:
     """Batch form, matching Hook-Checker's {variant_id: result} shape."""
     return {v["variant_id"]: check_pacing(v) for v in script_variants}
+
+
+async def pacing_checker_node(state: ProductCutState) -> dict:
+    """LangGraph node wrapper: deterministic timing check for each variant. Sync/pure, no I/O — runs in parallel with the other 4 checkers."""
+    scores = check_pacing_all(state["script_variants"])
+    return {"pacing_scores": scores}

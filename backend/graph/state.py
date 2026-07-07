@@ -4,7 +4,25 @@ Extend additively only: add new keys, never rename/remove an existing one
 without a sync between KR and RR and a version bump in this docstring.
 Spec of record: docs/TECHNICAL_DOCUMENTATION.md section 6.
 
-version: 1
+version: 4
+  - v2: added CompletionDetail + two CriticScore keys (completion, completion_detail)
+        and six NotRequired Critic-Chain scratch keys (hook/pacing/body/cta/tone_scores,
+        meta_critic_result) to plumb the 5 parallel checkers into the Meta-Critic join.
+  - v3: added two NotRequired Merge Coherence Validator scratch keys (§5.4.7):
+        merge_attempts (list[dict], §6-shaped: one entry per merge attempt, appended
+        by merge_validator_node) and pending_merge_candidate (dict, a
+        MergeCandidate.model_dump() scratch key written when repairing/setting up
+        the next attempt). winning_script is unchanged in shape -- it is now only
+        ever written by merge_validator_node, on a pass or the terminal fallback.
+  - v4: added two NotRequired scratch keys reconciling merge_validator_node with
+        agents/copy_editor.py's copy_editor_node (built in parallel, documents its
+        own state assumptions in its module docstring): coherence_validation_result
+        (dict, a CoherenceValidationResult.model_dump() -- written by
+        merge_validator_node when routing to the Copy Editor, read by
+        copy_editor_node for seam_flags/justification) and last_copy_edit (dict, a
+        CopyEditResult.model_dump() -- written by copy_editor_node, read by
+        merge_validator_node's next call to populate that attempt's §6 copy_edit
+        sub-object and the "copy_edited_then_accepted" outcome).
 """
 from typing import Literal, TypedDict
 from typing_extensions import NotRequired
@@ -49,9 +67,17 @@ class ScriptVariant(TypedDict):
     target_length_sec: int
 
 
+class CompletionDetail(TypedDict):
+    redundant_beat_pairs: list[list[int]]
+    promise_payoff_match: bool
+    emotional_trigger_landed: bool
+
+
 class CriticScore(TypedDict):
     hook: float
     pacing: float
+    completion: float                   # NEW — Body-Checker's completion_score (§5.4.3)
+    completion_detail: CompletionDetail  # NEW — Body-Checker's redundancy/promise-payoff/trigger detail
     cta: float
     tone: float
     composite: float
@@ -192,7 +218,17 @@ class ProductCutState(TypedDict, total=False):
     # populated by Phase 1 (Product Truth Extractor, Concept Agent, Critic Chain)
     product_truths: list[ProductTruth]
     script_variants: list[ScriptVariant]
+    hook_scores: NotRequired[dict[str, dict]]     # raw Hook-Checker output, consumed by meta_critic_node
+    pacing_scores: NotRequired[dict[str, dict]]   # raw Pacing-Checker output
+    body_scores: NotRequired[dict[str, dict]]     # raw Body-Checker output
+    cta_scores: NotRequired[dict[str, dict]]      # raw CTA-Checker output
+    tone_scores: NotRequired[dict[str, dict]]     # raw Tone-Checker output
+    meta_critic_result: NotRequired[dict]         # full MetaCriticResult.model_dump(); the next task (Merge Coherence Validator) consumes this. NOT winning_script — that is only set once an independent validator passes (not built yet).
     critic_scores: dict[str, CriticScore]
+    merge_attempts: NotRequired[list[dict]]
+    pending_merge_candidate: NotRequired[dict]
+    coherence_validation_result: NotRequired[dict]
+    last_copy_edit: NotRequired[dict]
     winning_script: WinningScript
     reasoning_trace: str
 
