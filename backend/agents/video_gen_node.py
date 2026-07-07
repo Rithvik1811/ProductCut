@@ -142,47 +142,42 @@ account before relying on this path; the derisk script that proved this out
 (`backend/derisk/test_video_gen.py` per that doc) was never committed, so
 there is no in-repo reference configuration to copy.
 
-KNOWN DEPARTURES FROM FROZEN SCHEMAS -- flagged, not applied unilaterally to
-the frozen files themselves. This is the "self-invented interface, clearly
-documented, do not block on RR" this task explicitly asked for:
-  1. `status = "fallback_requested"` (this module's failure hand-off marker)
-     is NOT one of `graph.state.Shot.status`'s frozen Literal values
-     (pending/generating/passed/fallback/review), NOT one of
-     `graph.shot_schema.ShotModel`'s `ShotStatus` Literal, and NOT one of
-     `graph.events.ShotGeneratedPayload.status`'s Literal either -- all three
-     would need this value added before a shot in this state could pass
-     Pydantic re-validation or a strictly-typed event payload. Deliberately
-     distinct from the ALREADY-frozen "fallback" value: per §5.9, "fallback"
-     is what the (not-yet-built) Ken-Burns node sets once it has actually
-     produced the pan/zoom clip -- "fallback_requested" means "handed off,
-     Ken-Burns hasn't run yet," a real and necessary distinction the frozen
-     enum doesn't currently have a name for.
-  2. `failure_reason: {type, detail}` is attached directly onto the returned
-     Shot dict (per this task's explicit requirement 6) even though
-     `graph.shot_schema.ShotModel` is `extra="forbid"` and does not declare
-     this field. Safe at runtime today because `validate_shot_list` is only
-     ever called once, inside shot_list_agent.py, before this node runs --
-     nothing downstream currently re-validates a shot through that Pydantic
-     model. If that ever changes, ShotModel needs `failure_reason` (and
-     `status`'s Literal needs `fallback_requested`) added first.
+SCHEMA STATUS -- RESOLVED (Phase 3 KR/RR sync). Items 1-2 below were originally
+flagged as self-invented, unconfirmed departures from the frozen schemas,
+pending a sync with RR before the Ken-Burns Fallback Node got built against
+them. That sync happened: RR formalized both into C1/C2/C3 (graph/state.py v6,
+graph/shot_schema.py v3, graph/events.py v3) rather than changing the shape --
+this module's runtime behavior is unchanged, the schemas simply now declare
+what this module already produced. Item 3 remains a deliberate, permanent
+design choice (not something pending resolution):
+  1. `status = "fallback_requested"` is now a real value in
+     `graph.state.Shot.status`'s Literal, `graph.shot_schema.ShotModel`'s
+     `ShotStatus`, and `graph.events.ShotGeneratedPayload.status`'s Literal.
+     Still deliberately distinct from the existing "fallback" value: per §5.9,
+     "fallback" is what the (not-yet-built) Ken-Burns node sets once it has
+     actually produced the pan/zoom clip -- "fallback_requested" means "handed
+     off, Ken-Burns hasn't run yet."
+  2. `failure_reason: {type, detail}` is now a declared, optional field on
+     `graph.shot_schema.ShotModel` (`Optional[FailureReasonModel] = None`) and
+     `graph.state.Shot` (`NotRequired[FailureReason]`) -- a shot carrying it no
+     longer risks failing a future re-validation pass through that Pydantic
+     model (`extra="forbid"` no longer applies to this field).
   3. `resolution_used` / `duration_sec_used` / `budget_clamped` are extra keys
      on the *GeneratedShot* dict beyond its frozen `{video_uri, drift_score,
      attempt}` shape (requirement 5's "record that clamp in the shot's
      state"). Chosen deliberately over extending Shot itself: unlike Shot,
      GeneratedShot has no Pydantic/`extra="forbid"` validator anywhere in this
      codebase, so this costs nothing today.
-  4. Event dispatch (`shot_generated` per C2, graph/events.py) is
-     intentionally NOT wired up in this module -- that is dashboard/live-
-     status-stream territory, explicitly out of this task's scope. The
-     returned `shot_list` (with `status`/`failure_reason`) and
-     `generated_shots` carry the same information for whoever wires event
-     dispatch in alongside the eventual graph integration.
+  4. Event dispatch (`shot_generated` per C2, graph/events.py) IS now wired up
+     in the node wrapper (Phase 3 RR task 2): one `shot_generated` event per
+     REAL clip (`is_fallback=False`); handed-off shots get their
+     `is_fallback=True` event from the Ken-Burns node once it renders them. Real
+     clips are also copied from the provider's ephemeral URL into OSS here (§5.8
+     "clip persisted to OSS"). See `video_gen_node` below.
 
-INTERFACE FOR KEN-BURNS FALLBACK NODE (not yet built -- RR). This is a
-documented ASSUMPTION this module makes, not a confirmed contract -- sync
-with RR before building the fallback node's input handling, since the exact
-status string / failure_reason shape may need to change once both sides
-agree (see docs/BUILD_TASKS.md Phase 3 for the mirrored note):
+INTERFACE FOR KEN-BURNS FALLBACK NODE (not yet built -- RR). CONFIRMED, per
+the Phase 3 KR/RR sync above -- this shape is now the real, formalized C1/C3
+contract, not an assumption pending agreement:
   * Watch for `shot["status"] == "fallback_requested"` on any shot in
     `state["shot_list"]` this node returns.
   * That shot will have `shot["failure_reason"] = {"type": "timeout" |
@@ -207,9 +202,12 @@ from typing import Annotated, Awaitable, Callable, Optional, TypedDict
 
 import dashscope
 from dashscope.aigc.video_synthesis import AioVideoSynthesis
+from langchain_core.callbacks.manager import adispatch_custom_event
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
+from agents._oss import persist_remote_video_to_oss
 from agents.budget_gate import RATE_720P, RATE_1080P
 from agents.shot_list_agent import MIN_SHOT_DURATION_SEC
 from graph.state import GeneratedShot, ProductCutState, ProductTruth, Shot, Treatment
@@ -541,25 +539,92 @@ async def generate_videos(
     return result.get("shots", []), result.get("generated_shots", {})
 
 
-async def video_gen_node(state: ProductCutState) -> dict:
-    """LangGraph node wrapper: reads shot_list/product_truths/treatment/
-    product_photos from state. NOT wired into graph/build.py yet -- see
-    module docstring for why (a deliberate scope boundary, not a blocked
-    dependency).
+async def _persist_generated_to_oss(
+    generated: dict[str, GeneratedShot], job_id: str
+) -> int:
+    """Copy each real clip from its ephemeral provider URL into the job's OSS
+    namespace, rewriting `video_uri` in place. Returns the count persisted.
+
+    Best-effort per shot: a persistence failure logs and KEEPS the still-valid
+    (if short-lived) provider URL rather than sinking the shot -- the clip was
+    generated successfully, so a copy failure must not downgrade it to a
+    fallback. Runs the blocking download+upload off the event loop and all
+    shots concurrently (matching this module's async-everywhere posture).
     """
+    async def _persist_one(shot_id: str, entry: GeneratedShot) -> bool:
+        try:
+            oss_uri = await asyncio.to_thread(
+                persist_remote_video_to_oss, entry["video_uri"], job_id, shot_id
+            )
+            entry["video_uri"] = oss_uri
+            return True
+        except Exception as exc:  # noqa: BLE001 -- a copy failure never sinks a real clip
+            logger.warning(
+                "Video-Gen Node: OSS persist failed for shot %s (%s) -- keeping the "
+                "provider URL (clip still valid, just not re-homed in OSS).",
+                shot_id, exc,
+            )
+            return False
+
+    results = await asyncio.gather(
+        *(_persist_one(sid, entry) for sid, entry in generated.items())
+    )
+    return sum(results)
+
+
+async def video_gen_node(
+    state: ProductCutState,
+    config: Optional[RunnableConfig] = None,
+) -> dict:
+    """LangGraph node wrapper: reads shot_list/product_truths/treatment/
+    product_photos from state, generates every shot, persists each real clip to
+    OSS, records per-shot status, and emits a C2 `shot_generated` event per real
+    clip (Phase 3 RR task -- §5.8 output contract + C2 realtime).
+
+    Event semantics (real vs. fallback): this node emits `shot_generated` with
+    `is_fallback=False` for every shot that produced a REAL clip. Handed-off
+    shots (`fallback_requested`) emit nothing here -- they have no clip yet;
+    the Ken-Burns Fallback Node (§5.9) emits their `is_fallback=True` event once
+    it renders them. So exactly one `shot_generated` fires per shot that ends up
+    with a clip, correctly labelled.
+
+    Dispatches via `adispatch_custom_event` (surfaces in `astream_events` as
+    `on_custom_event`, which app/main.py unwraps into a C2 envelope), mirroring
+    budget_gate_node's precedent. `config` defaults to None so the node stays
+    directly callable/testable; LangGraph injects the real RunnableConfig.
+    """
+    job_id = state.get("job_id", "unknown_job")
     shots, generated = await generate_videos(
         shots=state.get("shot_list", []),
         product_truths=state.get("product_truths", []),
         treatment=state.get("treatment"),
         product_photos=state.get("product_photos", []),
     )
+
+    n_persisted = await _persist_generated_to_oss(generated, job_id)
+
+    # One shot_generated event per real clip, in shot-list order (deterministic).
+    for shot in shots:
+        shot_id = shot["shot_id"]
+        if shot_id in generated:
+            await adispatch_custom_event(
+                "shot_generated",
+                {
+                    "shot_id": shot_id,
+                    "generated": generated[shot_id],
+                    "status": SUCCESS_STATUS,
+                    "is_fallback": False,
+                },
+                config=config,
+            )
+
     n_handed_off = sum(1 for s in shots if s.get("status") == FALLBACK_REQUESTED_STATUS)
-    trace_note = f"\n[video_gen] generated {len(generated)}/{len(shots)} shot(s)."
+    trace_note = (
+        f"\n[video_gen] generated {len(generated)}/{len(shots)} shot(s); "
+        f"persisted {n_persisted} to OSS."
+    )
     if n_handed_off:
-        trace_note += (
-            f" {n_handed_off} shot(s) handed off for Ken-Burns fallback "
-            "(not yet built -- RR; see this module's INTERFACE section)."
-        )
+        trace_note += f" {n_handed_off} shot(s) handed off for Ken-Burns fallback."
     return {
         "shot_list": shots,
         "generated_shots": generated,

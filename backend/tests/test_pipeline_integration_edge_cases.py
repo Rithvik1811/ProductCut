@@ -51,6 +51,7 @@ from agents.justification_validator import validate_justifications
 from agents.merge_validator import _winning_script_from_fallback_variant
 from graph.build import build_graph
 from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
+from tests._phase3_graph import patch_phase3_boundaries
 from tests.test_graph_build import (
     CHECKER_ROUTES,
     CONCEPT_AGENT_PAYLOAD,
@@ -90,6 +91,7 @@ def _patch_all_boundaries(monkeypatch, *, call_a: str, call_b: str) -> None:
         "agents.shot_list_agent.AsyncOpenAI",
         make_fake_async_openai([call_a, call_b]),
     )
+    patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
 
 
 async def _run_graph(monkeypatch, *, cap: float, call_a: str, call_b: str):

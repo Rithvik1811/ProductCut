@@ -4,7 +4,7 @@ Extend additively only: add new keys, never rename/remove an existing one
 without a sync between KR and RR and a version bump in this docstring.
 Spec of record: docs/TECHNICAL_DOCUMENTATION.md section 6.
 
-version: 5
+version: 6
   - v2: added CompletionDetail + two CriticScore keys (completion, completion_detail)
         and six NotRequired Critic-Chain scratch keys (hook/pacing/body/cta/tone_scores,
         meta_critic_result) to plumb the 5 parallel checkers into the Meta-Critic join.
@@ -28,6 +28,18 @@ version: 5
         camera_move += "rack_focus", shot_type += "product_in_hand". Mirrored
         in graph/shot_schema.py's runtime-validated CameraMove/ShotType (C3
         freeze, docs/BUILD_TASKS.md Phase 2). No field additions/removals.
+  - v6: Phase 3 (agents/video_gen_node.py, KR) hands a shot off to the
+        not-yet-built Ken-Burns Fallback Node (§5.9, RR) on a hard API
+        failure/timeout/budget-exceeded by setting status to a new value and
+        attaching a failure_reason -- formalizing what KR's module flagged as
+        a self-invented, unvalidated "known departure" pending a KR/RR sync
+        (docs/BUILD_TASKS.md Phase 3). Adds: Shot.status += "fallback_requested"
+        (deliberately distinct from the existing "fallback" value, which per
+        §5.9 means Ken-Burns has ALREADY rendered the clip -- "fallback_requested"
+        means "handed off, not rendered yet"); new FailureReason TypedDict
+        ({type: "timeout"|"api_error"|"budget_exceeded", detail: str}) and
+        Shot.failure_reason: NotRequired[FailureReason]. Mirrored in
+        graph/shot_schema.py's runtime-validated ShotStatus/ShotModel.
 """
 from typing import Literal, TypedDict
 from typing_extensions import NotRequired
@@ -118,6 +130,11 @@ class ShotJustification(TypedDict):
     treatment_ref: int  # matches a Treatment.beat_treatments[].beat_index
 
 
+class FailureReason(TypedDict):
+    type: Literal["timeout", "api_error", "budget_exceeded"]
+    detail: str
+
+
 class Shot(TypedDict):
     shot_id: str
     t_start: float
@@ -142,8 +159,11 @@ class Shot(TypedDict):
     allocated_budget: float
     voiceover_line: str
     justification: ShotJustification
-    status: Literal["pending", "generating", "passed", "fallback", "review"]
+    status: Literal[
+        "pending", "generating", "passed", "fallback", "review", "fallback_requested",
+    ]
     retry_count: int
+    failure_reason: NotRequired[FailureReason]
     # NOTE: no `product_category` field — omission is deliberate, see TECHNICAL_DOCUMENTATION.md §5.6
 
 

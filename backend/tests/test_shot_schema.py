@@ -1,11 +1,14 @@
 """
 Unit tests for the C3 shot-list Pydantic schema (graph/shot_schema.py).
 
-Covers the two things this module exists to guarantee mechanically: (1) the
-v2 additive enum values (rack_focus, product_in_hand) added ahead of the
-Shot-List Agent build validate correctly, and (2) the hard no-`product_category`
+Covers the things this module exists to guarantee mechanically: (1) the v2
+additive enum values (rack_focus, product_in_hand) added ahead of the
+Shot-List Agent build validate correctly, (2) the hard no-`product_category`
 rule (extra="forbid") actually rejects a shot carrying that field, since that
-is the concrete anti-genericness mechanism the schema is built around.
+is the concrete anti-genericness mechanism the schema is built around, and
+(3) the v3 fallback_requested/failure_reason fields (Phase 3 KR/RR sync,
+formalizing agents/video_gen_node.py's failure hand-off contract) validate
+correctly and reject a malformed failure_reason.
 """
 from __future__ import annotations
 
@@ -91,3 +94,47 @@ def test_validate_shot_list_validates_every_shot():
 def test_validate_shot_list_raises_on_first_invalid_shot():
     with pytest.raises(ValidationError):
         validate_shot_list([_shot(shot_id="s1"), _shot(shot_id="s2", camera_move="bad_move")])
+
+
+def test_fallback_requested_status_is_valid():
+    shot = validate_shot(_shot(status="fallback_requested"))
+    assert shot.status == "fallback_requested"
+
+
+def test_shot_without_failure_reason_defaults_to_none():
+    shot = validate_shot(_shot())
+    assert shot.failure_reason is None
+
+
+def test_shot_with_valid_failure_reason_passes():
+    shot = validate_shot(_shot(
+        status="fallback_requested",
+        failure_reason={"type": "timeout", "detail": "Wan exceeded the 180s wait timeout"},
+    ))
+    assert shot.failure_reason.type == "timeout"
+    assert shot.failure_reason.detail == "Wan exceeded the 180s wait timeout"
+
+
+@pytest.mark.parametrize("failure_type", ["timeout", "api_error", "budget_exceeded"])
+def test_all_three_failure_types_are_valid(failure_type):
+    shot = validate_shot(_shot(
+        status="fallback_requested",
+        failure_reason={"type": failure_type, "detail": "some detail"},
+    ))
+    assert shot.failure_reason.type == failure_type
+
+
+def test_unknown_failure_type_is_rejected():
+    with pytest.raises(ValidationError):
+        validate_shot(_shot(
+            status="fallback_requested",
+            failure_reason={"type": "gremlins", "detail": "the API just vanished"},
+        ))
+
+
+def test_failure_reason_missing_detail_is_rejected():
+    with pytest.raises(ValidationError):
+        validate_shot(_shot(
+            status="fallback_requested",
+            failure_reason={"type": "timeout"},
+        ))

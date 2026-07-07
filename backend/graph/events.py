@@ -23,10 +23,16 @@ Scope note: the Phase 0 scaffold in app/main.py also emits `run.started` /
 (`on_chain_start`, etc.). Those are transport/lifecycle scaffolding, NOT part of
 this frozen business-event contract, and are deliberately excluded here.
 
-version: 2
+version: 3
   - v2: added "merge_validated" event type + MergeValidatedPayload (§5.4.7's
         dashed `CV -.-> FE` streaming edge in the architecture diagram) so a
         merge-candidate retry/fallback is visible on the live stream, not hidden.
+  - v3: ShotGeneratedPayload.status += "fallback_requested" (Phase 3, mirrors
+        graph.state.Shot.status v6 / graph.shot_schema.ShotStatus v3 -- see
+        state.py's v6 note for why this is distinct from the existing
+        "fallback" value). Formalizes what agents/video_gen_node.py (KR) flagged
+        as a self-invented, unconfirmed departure pending a KR/RR sync
+        (docs/BUILD_TASKS.md Phase 3).
 """
 from __future__ import annotations
 
@@ -107,8 +113,10 @@ class ShotGeneratedPayload(TypedDict):
     """A single shot finished generation (real clip or Ken-Burns fallback)."""
     shot_id: str
     generated: GeneratedShot
-    # mirrors Shot.status in state.py (pending/generating/passed/fallback/review)
-    status: Literal["pending", "generating", "passed", "fallback", "review"]
+    # mirrors Shot.status in state.py (pending/generating/passed/fallback/review/fallback_requested)
+    status: Literal[
+        "pending", "generating", "passed", "fallback", "review", "fallback_requested",
+    ]
     is_fallback: bool  # True when routed to the Ken-Burns fallback node
 
 

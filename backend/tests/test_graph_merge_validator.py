@@ -37,6 +37,7 @@ import pytest
 
 from graph.build import build_graph
 from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
+from tests._phase3_graph import patch_phase3_boundaries
 from tests.test_graph_build import (
     CHECKER_ROUTES,
     CONCEPT_AGENT_PAYLOAD,
@@ -83,6 +84,7 @@ async def test_merge_validator_falls_back_on_unrepairable_pacing_failure(monkeyp
         "agents.shot_list_agent.AsyncOpenAI",
         make_fake_async_openai([SHOT_LIST_CALL_A_PAYLOAD, SHOT_LIST_CALL_B_PAYLOAD]),
     )
+    patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
 
     graph = await build_graph()
     initial_state = {

@@ -29,7 +29,7 @@ refactoring state.py, which is out of scope here -- state.py is C1's frozen
 contract). If C1's Shot literals change, update these to match and bump the
 version below.
 
-version: 2
+version: 3
   - v2: Phase 2 research (docs/TECHNICAL_DOCUMENTATION.md SS5.6) added two
         additive enum values ahead of the Shot-List Agent build: `rack_focus`
         (CameraMove) and `product_in_hand` (ShotType). Both are structurally
@@ -38,10 +38,21 @@ version: 2
         gives `demo`/`proof` beats a real human-interaction composition
         instead of being forced into `lifestyle_context` or `macro_detail`.
         This is the C3 freeze (docs/BUILD_TASKS.md, Phase 2, RR).
+  - v3: Phase 3 (agents/video_gen_node.py, KR) hands a shot off to the
+        Ken-Burns Fallback Node (SS5.9, RR) on a hard failure by setting a new
+        status and attaching a failure reason -- formalizing what KR's module
+        flagged as an unvalidated "known departure" pending a KR/RR sync
+        (docs/BUILD_TASKS.md Phase 3). "Frozen at end of Phase 2" means frozen
+        against RENAMING/REMOVING fields, same as C1 (graph/state.py) -- purely
+        additive extensions in a later phase are exactly what that policy
+        allows. Adds: ShotStatus += "fallback_requested" (distinct from the
+        existing "fallback" -- see graph/state.py's v6 note for why); new
+        FailureReasonModel and `ShotModel.failure_reason: Optional[...] = None`
+        (optional, not required, since only a handed-off shot carries one).
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -62,7 +73,20 @@ Framing = Literal[
 
 TextOverlayZone = Literal["none", "left_third", "right_third", "lower_third"]
 
-ShotStatus = Literal["pending", "generating", "passed", "fallback", "review"]
+ShotStatus = Literal[
+    "pending", "generating", "passed", "fallback", "review", "fallback_requested",
+]
+
+FailureType = Literal["timeout", "api_error", "budget_exceeded"]
+
+
+class FailureReasonModel(BaseModel):
+    """Mirrors graph.state.FailureReason -- runtime-validated."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: FailureType
+    detail: str = Field(..., min_length=1)
 
 
 class ShotJustificationModel(BaseModel):
@@ -105,6 +129,7 @@ class ShotModel(BaseModel):
     justification: ShotJustificationModel
     status: ShotStatus
     retry_count: int = Field(..., ge=0)
+    failure_reason: Optional[FailureReasonModel] = None
 
 
 def validate_shot(raw: dict) -> ShotModel:
@@ -136,6 +161,8 @@ __all__ = [
     "Framing",
     "TextOverlayZone",
     "ShotStatus",
+    "FailureType",
+    "FailureReasonModel",
     "ShotJustificationModel",
     "ShotModel",
     "validate_shot",

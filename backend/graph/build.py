@@ -1,8 +1,9 @@
 """
-Phase 1+2: LangGraph graph -- Product Truth Extractor -> Concept Agent -> 5 parallel
+Phase 1-3: LangGraph graph -- Product Truth Extractor -> Concept Agent -> 5 parallel
 Critic Chain checkers -> Meta-Critic -> Merge Coherence Validator -> (Copy Editor
 loop-back | Meta-Critic swap retry | fallback) -> winning_script finalized ->
-Treatment Agent -> Shot-List Agent -> Budget Gate.
+Treatment Agent -> Shot-List Agent -> Budget Gate -> Video-Gen Node -> Ken-Burns
+Fallback Node.
 
 The full Critic Chain (§5.4) is wired end to end, including the Merge Coherence
 Validator (§5.4.7) and Copy Editor (§5.4.8). `winning_script` is set by
@@ -10,9 +11,9 @@ merge_validator_node on EITHER a full pass ("finalize") or a terminal fallback
 ("fallback") -- both are legitimate, usable winning scripts (the fallback is
 the single highest composite-scoring original variant, not a degraded/partial
 result), so BOTH route into Treatment Agent rather than only "finalize". Phase 2
-(Treatment Agent §5.5, Shot-List Agent §5.6, Budget Gate §5.7) is now wired in
-after it -- nothing downstream of Budget Gate (Video-Gen, Continuity, Voiceover,
-Assembly) is wired yet.
+(Treatment Agent §5.5, Shot-List Agent §5.6, Budget Gate §5.7) and Phase 3
+(Video-Gen Node §5.8, Ken-Burns Fallback Node §5.9) are wired in after it --
+nothing downstream of Ken-Burns (Continuity, Voiceover, Assembly) is wired yet.
 
 Checkpointer selection is graceful:
   - if DATABASE_URL is set  -> AsyncPostgresSaver (real durable checkpoints)
@@ -50,12 +51,14 @@ from agents.concept_agent import concept_agent_node
 from agents.copy_editor import copy_editor_node
 from agents.cta_tone_checkers import cta_checker_node, tone_checker_node
 from agents.hook_checker import hook_checker_node
+from agents.ken_burns_fallback_node import ken_burns_fallback_node
 from agents.merge_validator import merge_validator_node, route_after_merge_validation
 from agents.meta_critic import meta_critic_node
 from agents.pacing_checker import pacing_checker_node
 from agents.product_truth_extractor import product_truth_extractor_node
 from agents.shot_list_agent import shot_list_agent_node
 from agents.treatment_agent import treatment_agent_node
+from agents.video_gen_node import video_gen_node
 from graph.state import ProductCutState
 
 logger = logging.getLogger("productcut.graph")
@@ -100,9 +103,13 @@ def _build_uncompiled() -> StateGraph:
     builder.add_node("treatment_agent", treatment_agent_node)
     builder.add_node("shot_list_agent", shot_list_agent_node)
     builder.add_node("budget_gate", budget_gate_node)
+    builder.add_node("video_gen", video_gen_node)
+    builder.add_node("ken_burns_fallback", ken_burns_fallback_node)
     builder.add_edge("treatment_agent", "shot_list_agent")
     builder.add_edge("shot_list_agent", "budget_gate")
-    builder.add_edge("budget_gate", END)
+    builder.add_edge("budget_gate", "video_gen")
+    builder.add_edge("video_gen", "ken_burns_fallback")
+    builder.add_edge("ken_burns_fallback", END)
 
     builder.add_conditional_edges(
         "merge_validator",

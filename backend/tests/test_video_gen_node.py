@@ -16,6 +16,7 @@ import asyncio
 import time
 
 import pytest
+from langchain_core.runnables import RunnableLambda
 
 from agents.budget_gate import RATE_720P, RATE_1080P
 from agents.shot_list_agent import MIN_SHOT_DURATION_SEC
@@ -31,6 +32,7 @@ from agents.video_gen_node import (
     _resolve_generation_params,
     _resolve_reference_image_url,
     generate_videos,
+    video_gen_node,
 )
 
 TRUTHS = [
@@ -303,3 +305,103 @@ async def test_mixed_success_and_failure_across_parallel_shots():
     # One shot's failure never blocks/affects the other's success.
     assert by_id["s_ok"]["retry_count"] == 0
     assert by_id["s_bad"]["retry_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# video_gen_node wrapper: OSS persistence + shot_generated events
+# ---------------------------------------------------------------------------
+def _base_state(shots):
+    return {
+        "job_id": "job-vg",
+        "product_photos": PRODUCT_PHOTOS,
+        "product_truths": TRUTHS,
+        "treatment": TREATMENT,
+        "shot_list": shots,
+        "reasoning_trace": "",
+    }
+
+
+@pytest.mark.asyncio
+async def test_node_persists_real_clips_to_oss_and_rewrites_uri(monkeypatch):
+    async def fake_generate(**kwargs):
+        return "http://wan.example.com/ephemeral/clip.mp4?token=xyz"
+
+    persisted: list[tuple] = []
+
+    def fake_persist(remote_url, job_id, shot_id, filename="shot.mp4", *, bucket=None, download_fn=None):
+        persisted.append((remote_url, job_id, shot_id))
+        return f"http://oss.example.com/jobs/{job_id}/shots/{shot_id}/{filename}"
+
+    monkeypatch.setattr("agents.video_gen_node._call_wan_video_gen", fake_generate)
+    monkeypatch.setattr("agents.video_gen_node.persist_remote_video_to_oss", fake_persist)
+
+    result = await RunnableLambda(video_gen_node).ainvoke(_base_state([_shot("s1"), _shot("s2")]))
+
+    gen = result["generated_shots"]
+    assert set(gen.keys()) == {"s1", "s2"}
+    for sid in ("s1", "s2"):
+        assert gen[sid]["video_uri"] == f"http://oss.example.com/jobs/job-vg/shots/{sid}/shot.mp4"
+    assert {p[2] for p in persisted} == {"s1", "s2"}
+    assert "persisted 2 to OSS" in result["reasoning_trace"]
+
+
+@pytest.mark.asyncio
+async def test_node_keeps_provider_url_when_oss_persist_fails(monkeypatch):
+    async def fake_generate(**kwargs):
+        return "http://wan.example.com/keep-me.mp4"
+
+    def boom_persist(*a, **k):
+        raise OSError("OSS down")
+
+    monkeypatch.setattr("agents.video_gen_node._call_wan_video_gen", fake_generate)
+    monkeypatch.setattr("agents.video_gen_node.persist_remote_video_to_oss", boom_persist)
+
+    result = await RunnableLambda(video_gen_node).ainvoke(_base_state([_shot("s1")]))
+
+    # Persist failure must not sink a real clip: keep the still-valid provider URL.
+    assert result["generated_shots"]["s1"]["video_uri"] == "http://wan.example.com/keep-me.mp4"
+    assert result["shot_list"][0]["status"] == SUCCESS_STATUS
+    assert "persisted 0 to OSS" in result["reasoning_trace"]
+
+
+@pytest.mark.asyncio
+async def test_node_emits_shot_generated_real_events(monkeypatch):
+    async def fake_generate(**kwargs):
+        return "http://wan.example.com/clip.mp4"
+
+    monkeypatch.setattr("agents.video_gen_node._call_wan_video_gen", fake_generate)
+    monkeypatch.setattr(
+        "agents.video_gen_node.persist_remote_video_to_oss",
+        lambda url, job_id, shot_id, filename="shot.mp4", *, bucket=None, download_fn=None: f"http://oss/{shot_id}.mp4",
+    )
+
+    events = [
+        e
+        async for e in RunnableLambda(video_gen_node).astream_events(_base_state([_shot("s1"), _shot("s2")]), version="v2")
+        if e.get("event") == "on_custom_event" and e.get("name") == "shot_generated"
+    ]
+
+    by_id = {e["data"]["shot_id"]: e["data"] for e in events}
+    assert set(by_id.keys()) == {"s1", "s2"}
+    assert all(d["is_fallback"] is False for d in by_id.values())
+    assert all(d["status"] == SUCCESS_STATUS for d in by_id.values())
+
+
+@pytest.mark.asyncio
+async def test_node_does_not_emit_for_handed_off_shot(monkeypatch):
+    async def fake_generate(**kwargs):
+        raise VideoGenAPIError("hard failure")
+
+    monkeypatch.setattr("agents.video_gen_node._call_wan_video_gen", fake_generate)
+    monkeypatch.setattr(
+        "agents.video_gen_node.persist_remote_video_to_oss",
+        lambda *a, **k: "http://oss/x.mp4",
+    )
+
+    events = [
+        e
+        async for e in RunnableLambda(video_gen_node).astream_events(_base_state([_shot("s1")]), version="v2")
+        if e.get("event") == "on_custom_event" and e.get("name") == "shot_generated"
+    ]
+    # The shot was handed off (fallback_requested) — no clip, so no event here.
+    assert events == []

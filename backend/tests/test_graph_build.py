@@ -17,6 +17,7 @@ import pytest
 
 from graph.build import build_graph
 from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
+from tests._phase3_graph import patch_phase3_boundaries
 
 GOOD_FACTS = [
     ("a hairline scratch runs diagonally across the lower left corner of the lid", "imperfection"),
@@ -378,6 +379,7 @@ async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatc
         "agents.shot_list_agent.AsyncOpenAI",
         make_fake_async_openai([SHOT_LIST_CALL_A_PAYLOAD, SHOT_LIST_CALL_B_PAYLOAD]),
     )
+    patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
 
     graph = await build_graph()
     initial_state = {
@@ -408,6 +410,7 @@ async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatc
         "critic_score",
         "merge_validated",
         "budget_updated",
+        "shot_generated",
     }, event_names
     truth_event = next(e for e in custom_events if e["name"] == "truth_extracted")
     assert truth_event["data"]["count"] == len(GOOD_FACTS)
@@ -418,8 +421,10 @@ async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatc
         "concept_agent_node must have read product_truths from state (written by "
         "the upstream node) and produced 4 variants from them"
     )
-    # Phase 2 ran to the end: treatment, shot_list and budget_ledger are populated.
+    # Phase 2+3 ran to the end: treatment, shot_list, budget_ledger, and generated clips.
     values = final_state.values
     assert values["treatment"]["beat_treatments"], "treatment_agent did not run"
     assert 3 <= len(values["shot_list"]) <= 7, "shot_list_agent did not produce 3-7 shots"
     assert values["budget_ledger"]["cap"] > 0, "budget_gate did not build a ledger"
+    assert len(values["generated_shots"]) == len(values["shot_list"]), "video_gen + ken_burns did not produce one clip per shot"
+    assert all(s["status"] in ("passed", "fallback") for s in values["shot_list"])

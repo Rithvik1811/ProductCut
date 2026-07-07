@@ -1,6 +1,6 @@
 """
 Full-pipeline end-to-end test: drive the ENTIRE compiled LangGraph in one shot,
-from ingest-state through the Budget Gate, faking every network boundary and
+from ingest-state through Ken-Burns Fallback, faking every network boundary and
 asserting a genuinely coherent final state (not merely "it didn't crash").
 
 Faked boundaries (every module that builds an OpenAI client):
@@ -10,6 +10,9 @@ Faked boundaries (every module that builds an OpenAI client):
   * agents.critic_llm.OpenAI                    (sync)   — Body/CTA/Tone/Meta
   * agents.treatment_agent.AsyncOpenAI          (async)  — Treatment Agent (§5.5)
   * agents.shot_list_agent.AsyncOpenAI          (async)  — Shot-List Agent (§5.6)
+  * agents.video_gen_node._call_wan_video_gen   (async)  — Video-Gen Node (§5.8)
+  * agents.ken_burns_fallback_node.render_ken_burns_clip + agents._oss.upload_video_to_oss
+    — Ken-Burns Fallback Node (§5.9)
 
 Everything else is real: StateGraph superstep scheduling, the checkpointer,
 astream_events, custom-event dispatch, the Pacing-Checker (pure code), KR's real
@@ -38,8 +41,10 @@ from __future__ import annotations
 import pytest
 
 from agents.budget_gate import RATE_1080P
+from agents.video_gen_node import FALLBACK_REQUESTED_STATUS, SUCCESS_STATUS
 from graph.build import build_graph
 from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
+from tests._phase3_graph import patch_phase3_boundaries
 from tests.test_graph_build import (
     CHECKER_ROUTES,
     CONCEPT_AGENT_PAYLOAD,
@@ -57,7 +62,7 @@ _SEEDED_CAP = 1.00
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_ingest_through_budget_gate(monkeypatch):
+async def test_full_pipeline_ingest_through_ken_burns_fallback(monkeypatch):
     # --- Fake every network boundary in the whole graph --------------------
     monkeypatch.setattr(
         "agents.product_truth_extractor.AsyncOpenAI",
@@ -83,6 +88,7 @@ async def test_full_pipeline_ingest_through_budget_gate(monkeypatch):
         "agents.shot_list_agent.AsyncOpenAI",
         make_fake_async_openai([SHOT_LIST_CALL_A_PAYLOAD, SHOT_LIST_CALL_B_PAYLOAD]),
     )
+    patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
 
     graph = await build_graph()
     initial_state = {
@@ -108,6 +114,7 @@ async def test_full_pipeline_ingest_through_budget_gate(monkeypatch):
         "critic_score",
         "merge_validated",
         "budget_updated",
+        "shot_generated",
     }, event_names
 
     values = (await graph.aget_state(config)).values
@@ -150,3 +157,92 @@ async def test_full_pipeline_ingest_through_budget_gate(monkeypatch):
     budget_event = next(e for e in custom_events if e["name"] == "budget_updated")
     assert budget_event["data"]["ledger"] == ledger
     assert budget_event["data"]["over_cap"] is False
+
+    # --- Phase 3: every shot has a generated clip and a terminal status -------
+    generated = values["generated_shots"]
+    assert set(generated.keys()) == {shot["shot_id"] for shot in shot_list}
+    for shot in shot_list:
+        assert shot["status"] == SUCCESS_STATUS
+        assert shot["retry_count"] == 0
+        entry = generated[shot["shot_id"]]
+        # Real clips are re-homed in OSS under the job's namespace (§5.8).
+        assert entry["video_uri"].startswith("http://oss.example.com/jobs/test-job-e2e/shots/")
+        assert entry["attempt"] == 1
+    assert "[video_gen]" in values["reasoning_trace"]
+    assert "persisted 3 to OSS" in values["reasoning_trace"]
+    assert "[ken_burns_fallback]" in values["reasoning_trace"]
+
+    # --- shot_generated events: one per shot, all real (is_fallback=False) ----
+    shot_events = [e for e in custom_events if e["name"] == "shot_generated"]
+    assert len(shot_events) == len(shot_list)
+    assert {e["data"]["shot_id"] for e in shot_events} == set(generated.keys())
+    assert all(e["data"]["is_fallback"] is False for e in shot_events)
+    assert all(e["data"]["status"] == SUCCESS_STATUS for e in shot_events)
+
+
+@pytest.mark.asyncio
+async def test_full_pipeline_video_gen_failure_routes_to_ken_burns_without_blocking(monkeypatch):
+    """One shot's Wan failure must not block the others; Ken-Burns recovers it."""
+    monkeypatch.setattr(
+        "agents.product_truth_extractor.AsyncOpenAI",
+        make_fake_async_openai([TRUTH_EXTRACTOR_PAYLOAD]),
+    )
+    monkeypatch.setattr(
+        "agents.concept_agent.AsyncOpenAI",
+        make_fake_async_openai([CONCEPT_AGENT_PAYLOAD]),
+    )
+    monkeypatch.setattr(
+        "agents.hook_checker.AsyncOpenAI",
+        make_fake_async_openai([HOOK_PAYLOAD]),
+    )
+    monkeypatch.setattr(
+        "agents.critic_llm.OpenAI",
+        make_content_routed_sync_openai(CHECKER_ROUTES),
+    )
+    monkeypatch.setattr(
+        "agents.treatment_agent.AsyncOpenAI",
+        make_fake_async_openai([TREATMENT_PAYLOAD]),
+    )
+    monkeypatch.setattr(
+        "agents.shot_list_agent.AsyncOpenAI",
+        make_fake_async_openai([SHOT_LIST_CALL_A_PAYLOAD, SHOT_LIST_CALL_B_PAYLOAD]),
+    )
+    patch_phase3_boundaries(monkeypatch, fail_shot_s2=True)
+
+    graph = await build_graph()
+    initial_state = {
+        "job_id": "test-job-e2e-mixed",
+        "product_photos": ["http://example.com/a.jpg"],
+        "brief": "a durable everyday case",
+        "budget_ledger": {"cap": _SEEDED_CAP, "spent": 0.0, "per_shot": {}},
+    }
+    config = {"configurable": {"thread_id": "test-job-e2e-mixed"}}
+
+    custom_events = [
+        e
+        async for e in graph.astream_events(initial_state, config=config, version="v2")
+        if e.get("event") == "on_custom_event"
+    ]
+
+    values = (await graph.aget_state(config)).values
+    shot_list = values["shot_list"]
+    generated = values["generated_shots"]
+    by_id = {s["shot_id"]: s for s in shot_list}
+
+    # s2's Call-B description is unique ("asymmetric rear vent") — our fake Wan fails on it.
+    assert by_id["s1"]["status"] == SUCCESS_STATUS
+    assert by_id["s2"]["status"] == "fallback"
+    assert by_id["s3"]["status"] == SUCCESS_STATUS
+    assert set(generated.keys()) == {"s1", "s2", "s3"}
+    assert generated["s2"]["video_uri"].startswith("http://oss.example.com/jobs/test-job-e2e-mixed/shots/s2/")
+    for shot in shot_list:
+        assert shot["retry_count"] == 0
+    assert FALLBACK_REQUESTED_STATUS not in {s["status"] for s in shot_list}
+
+    # --- shot_generated events: s1/s3 real, s2 fallback — one per shot --------
+    shot_events = {e["data"]["shot_id"]: e["data"] for e in custom_events if e["name"] == "shot_generated"}
+    assert set(shot_events.keys()) == {"s1", "s2", "s3"}
+    assert shot_events["s1"]["is_fallback"] is False
+    assert shot_events["s3"]["is_fallback"] is False
+    assert shot_events["s2"]["is_fallback"] is True
+    assert shot_events["s2"]["status"] == "fallback"

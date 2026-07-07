@@ -31,6 +31,7 @@ import pytest
 
 from graph.build import build_graph
 from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
+from tests._phase3_graph import patch_phase3_boundaries
 from tests.test_graph_build import (
     CHECKER_ROUTES,
     CONCEPT_AGENT_PAYLOAD,
@@ -75,6 +76,7 @@ async def test_full_critic_chain_runs_fanout_fanin_in_graph(monkeypatch):
         "agents.shot_list_agent.AsyncOpenAI",
         make_fake_async_openai([SHOT_LIST_CALL_A_PAYLOAD, SHOT_LIST_CALL_B_PAYLOAD]),
     )
+    patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
 
     graph = await build_graph()
     initial_state = {
@@ -100,6 +102,7 @@ async def test_full_critic_chain_runs_fanout_fanin_in_graph(monkeypatch):
         "critic_score",
         "merge_validated",
         "budget_updated",
+        "shot_generated",
     }, names
     truth_event = next(e for e in custom_events if e["name"] == "truth_extracted")
     assert truth_event["data"]["count"] == len(GOOD_FACTS)
