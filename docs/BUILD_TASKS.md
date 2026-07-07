@@ -116,11 +116,12 @@ These are shared contracts — draft together, commit as versioned files (schema
 *Goal: generate every shot in parallel with a hard-failure path that never blocks the pipeline.*
 
 ### KR
-- [ ] `[BRAIN]` **Video-Gen Node**: LangGraph parallel fan-out via `Send()`; structured prompt formula (Subject→Action→Camera→Lighting→Composition→Mood→Quality) + `negative_prompt` + reference product photo (image-to-video only, never text-to-video)
+- [x] `[BRAIN]` **Video-Gen Node**: LangGraph parallel fan-out via `Send()`; structured prompt formula (Subject→Action→Camera→Lighting→Composition→Mood→Quality) + `negative_prompt` + reference product photo (image-to-video only, never text-to-video) — `backend/agents/video_gen_node.py`, tests in `backend/tests/test_video_gen_node.py`. Self-contained `Send()` fan-out (own private subgraph, no C1 change needed); budget-clamp policy per `agents/budget_gate.py`'s own documented RATE_720P/RATE_1080P comparison; not yet wired into `graph/build.py` (deliberate follow-up integration step, matching how Phase 2's agents were each merged standalone first — see module docstring).
 - [ ] `[BODY]` Dashboard: per-shot generation status grid (queued/generating/done/fallback) with thumbnails
 
 ### RR
 - [ ] `[BRAIN]` **Ken-Burns Fallback Node** — on hard API failure/timeout, route straight to fallback, **no retry consumed**
+  **Interface note (from KR's Video-Gen Node, merged on p3kr):** on shot failure/timeout, Video-Gen Node sets shot status to `fallback_requested` and attaches a `failure_reason: {type, detail}` object; no retry count is touched on this path. This is KR's own assumed shape, not yet confirmed with RR — sync before building the fallback node's input handling, since the exact status string/failure_reason shape may need adjustment once both sides agree.
 - [ ] `[BRAIN]` Upload generated shot assets to OSS; record per-shot status in state; emit `shot_generated` events (real vs. fallback)
 - [ ] `[BODY]` Verify OSS read access from frontend (signed URLs or backend proxy) for shot previews
 
