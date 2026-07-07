@@ -36,6 +36,9 @@ from tests.test_graph_build import (
     CONCEPT_AGENT_PAYLOAD,
     GOOD_FACTS,
     HOOK_PAYLOAD,
+    SHOT_LIST_CALL_A_PAYLOAD,
+    SHOT_LIST_CALL_B_PAYLOAD,
+    TREATMENT_PAYLOAD,
     TRUTH_EXTRACTOR_PAYLOAD,
     _VARIANT_IDS,
 )
@@ -62,6 +65,16 @@ async def test_full_critic_chain_runs_fanout_fanin_in_graph(monkeypatch):
         "agents.critic_llm.OpenAI",
         make_content_routed_sync_openai(CHECKER_ROUTES),
     )
+    # Phase 2 (Treatment Agent + Shot-List Agent) now runs after merge_validator;
+    # fake their network boundary too (Budget Gate is pure code, nothing to fake).
+    monkeypatch.setattr(
+        "agents.treatment_agent.AsyncOpenAI",
+        make_fake_async_openai([TREATMENT_PAYLOAD]),
+    )
+    monkeypatch.setattr(
+        "agents.shot_list_agent.AsyncOpenAI",
+        make_fake_async_openai([SHOT_LIST_CALL_A_PAYLOAD, SHOT_LIST_CALL_B_PAYLOAD]),
+    )
 
     graph = await build_graph()
     initial_state = {
@@ -77,12 +90,17 @@ async def test_full_critic_chain_runs_fanout_fanin_in_graph(monkeypatch):
         if event.get("event") == "on_custom_event"
     ]
 
-    # Three custom events fire across the whole chain: truth_extracted (from the
-    # truth extractor), critic_score (from the meta_critic fan-in node), and
-    # merge_validated (from the Merge Coherence Validator, §5.4.7, now wired in
-    # after meta_critic -- see test_graph_merge_validator.py for its own assertions).
+    # Four custom events fire across the whole chain: truth_extracted (truth
+    # extractor), critic_score (meta_critic fan-in), merge_validated (Merge
+    # Coherence Validator, §5.4.7), and budget_updated (Budget Gate, §5.7 -- the
+    # only Phase 2 node that dispatches an event).
     names = {e["name"] for e in custom_events}
-    assert names == {"truth_extracted", "critic_score", "merge_validated"}, names
+    assert names == {
+        "truth_extracted",
+        "critic_score",
+        "merge_validated",
+        "budget_updated",
+    }, names
     truth_event = next(e for e in custom_events if e["name"] == "truth_extracted")
     assert truth_event["data"]["count"] == len(GOOD_FACTS)
     critic_event = next(e for e in custom_events if e["name"] == "critic_score")
@@ -117,3 +135,13 @@ async def test_full_critic_chain_runs_fanout_fanin_in_graph(monkeypatch):
     ) == ("v1", "v2", "v3")
     # Step 6 re-timing ran and produced a contiguous candidate ending at target.
     assert mc["merged_beats"][-1]["t_end"] == pytest.approx(mc["target_length_sec"])
+
+    # Phase 2 ran on past the (fallback) winning_script: treatment, shot_list and
+    # budget_ledger are all populated, one beat_treatment per winning-script beat,
+    # 3-7 shots, and every shot carries a real, positive budget allocation.
+    assert len(final["treatment"]["beat_treatments"]) == len(final["winning_script"]["beats"])
+    shot_list = final["shot_list"]
+    assert 3 <= len(shot_list) <= 7
+    assert all(shot["allocated_budget"] > 0 for shot in shot_list)
+    assert all("product_category" not in shot for shot in shot_list)
+    assert final["budget_ledger"]["cap"] > 0

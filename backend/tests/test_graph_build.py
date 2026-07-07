@@ -199,6 +199,148 @@ CHECKER_ROUTES = [
     ("brand-tone critic", TONE_PAYLOAD),
 ]
 
+# ---------------------------------------------------------------------------
+# Phase 2 fakes (Treatment Agent §5.5, Shot-List Agent §5.6). merge_validator
+# now routes BOTH "finalize" and "fallback" into treatment_agent -> shot_list_agent
+# -> budget_gate, so every graph test that drives the chain that far must fake
+# these two agents' network boundary or they hit the real DashScope endpoint.
+#
+# WINNING-SCRIPT NOTE. FOUR_GOOD_VARIANTS gives each variant a single body beat,
+# so meta_critic's merge candidate fails the Merge Coherence Validator's pacing
+# re-check unrepairably and merge_validator routes via "fallback" -- the winning
+# script is then variant v1's OWN, unmerged text/beats (fallback = the single
+# highest-composite variant; all four tie on composite here, so the lexicographic
+# tiebreak picks v1). The Justification Validator (KR's real one, shared by both
+# agents) checks each script_quote against winning_script["text"], NOT against a
+# beat's own line -- and v1's text ("Scratched already? This one shrugs it off.
+# Tap to shop.") is NOT the concatenation of its beat lines. So every quote below
+# is a verbatim substring of v1's TEXT, which is what actually gets validated.
+_WINNING_TEXT = FOUR_GOOD_VARIANTS[0]["text"]  # v1's text (the fallback winner)
+
+# Treatment: exactly one beat_treatment per winning-script beat (3), beat_index in
+# order, valid 5-value beat_function, a real truth_id (t1..t6), and no banned
+# "category" word / generic stoplist phrase in the free-text fields.
+TREATMENT_PAYLOAD = json.dumps(
+    {
+        "director_persona": "intimate, handheld warmth that lingers on worn detail",
+        "color_story": "matte graphite housing under warm tungsten highlights",
+        "pacing_philosophy": "a slow, curious build that snaps shut on the ask",
+        "beat_treatments": [
+            {
+                "beat_index": 0,
+                "beat_function": "hook",
+                "script_quote": "Scratched already?",
+                "truth_fact_id": "t1",
+                "visual_approach": "static macro hold on the diagonal hairline scratch, no camera movement",
+                "why_not_generic": "This exact diagonal scratch lives on THIS lid; no stock opener could show it.",
+            },
+            {
+                "beat_index": 1,
+                "beat_function": "demo",
+                "script_quote": "This one shrugs it off.",
+                "truth_fact_id": "t2",
+                "visual_approach": "slow partial orbit revealing the two asymmetric rear vent slots",
+                "why_not_generic": "The asymmetric slot placement is specific to this base plate, not a generic vent.",
+            },
+            {
+                "beat_index": 2,
+                "beat_function": "cta",
+                "script_quote": "Tap to shop.",
+                "truth_fact_id": "t3",
+                "visual_approach": "quick push onto the debossed hinge stamp, then hold on the endcard",
+                "why_not_generic": "The debossed stamp is a real mark on this unit, grounding the closing ask.",
+            },
+        ],
+    }
+)
+
+# Shot-List Call A ("Justify"): 3 shots, each quoting a verbatim span of v1's TEXT,
+# a real truth_id, and a treatment_ref that is a real beat_index (0/1/2) from the
+# TREATMENT_PAYLOAD above -- so KR's real Justification Validator passes them all.
+SHOT_LIST_CALL_A_PAYLOAD = json.dumps(
+    {
+        "shots": [
+            {
+                "shot_id": "s1",
+                "beat_role": "hook",
+                "script_quote": "Scratched already?",
+                "truth_fact_id": "t1",
+                "treatment_ref": 0,
+            },
+            {
+                "shot_id": "s2",
+                "beat_role": "demo",
+                "script_quote": "This one shrugs it off.",
+                "truth_fact_id": "t2",
+                "treatment_ref": 1,
+            },
+            {
+                "shot_id": "s3",
+                "beat_role": "cta",
+                "script_quote": "Tap to shop.",
+                "truth_fact_id": "t3",
+                "treatment_ref": 2,
+            },
+        ]
+    }
+)
+
+# Shot-List Call B ("Realize"): one entry per Call-A shot_id, all enum values drawn
+# from graph.shot_schema, duration_sec in [3, 5]. These assemble into full Shots
+# that pass the structural validate_shot_list (no product_category field anywhere).
+SHOT_LIST_CALL_B_PAYLOAD = json.dumps(
+    {
+        "lighting": "warm tungsten key with a soft graphite falloff, held constant across every shot",
+        "shots": [
+            {
+                "shot_id": "s1",
+                "shot_type": "hook_hero",
+                "camera_move": "push_in",
+                "framing": "fills_frame",
+                "text_overlay_zone": "none",
+                "duration_sec": 3,
+                "voiceover_line": "Scratched already?",
+                "description": (
+                    "Matte graphite lid fills the frame, the diagonal hairline scratch catching "
+                    "warm tungsten light. Slow push-in on the mark, no cuts. Preserve product "
+                    "shape, keep label text, keep proportions."
+                ),
+                "negative_prompt_extra": "",
+            },
+            {
+                "shot_id": "s2",
+                "shot_type": "macro_detail",
+                "camera_move": "static",
+                "framing": "fills_frame",
+                "text_overlay_zone": "none",
+                "duration_sec": 4,
+                "voiceover_line": "This one shrugs it off.",
+                "description": (
+                    "Extreme macro on the two asymmetric rear vent slots of the base plate, held "
+                    "steady under the same warm key. Preserve product shape, keep label text, keep "
+                    "proportions."
+                ),
+                "negative_prompt_extra": "",
+            },
+            {
+                "shot_id": "s3",
+                "shot_type": "cta_endcard",
+                "camera_move": "static",
+                "framing": "fills_frame",
+                "text_overlay_zone": "lower_third",
+                "duration_sec": 3,
+                "voiceover_line": "Tap to shop.",
+                "description": (
+                    "The debossed hinge stamp resolves into a clean endcard, lower third reserved "
+                    "for the composited CTA. Preserve product shape, keep label text, keep "
+                    "proportions."
+                ),
+                "negative_prompt_extra": "",
+            },
+        ],
+    }
+)
+
 
 @pytest.mark.asyncio
 async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatch):
@@ -222,6 +364,20 @@ async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatc
         "agents.critic_llm.OpenAI",
         make_content_routed_sync_openai(CHECKER_ROUTES),
     )
+    # Phase 2 is now wired in after merge_validator (both "finalize" and "fallback"
+    # route into it), so the graph runs on past winning_script into the Treatment
+    # Agent + Shot-List Agent, which each build their own AsyncOpenAI. Fake both or
+    # they hit the real endpoint. Budget Gate is pure code (no client to fake), and
+    # the Shot-List Agent's justification validator is KR's real deterministic one
+    # (runs for real, not faked).
+    monkeypatch.setattr(
+        "agents.treatment_agent.AsyncOpenAI",
+        make_fake_async_openai([TREATMENT_PAYLOAD]),
+    )
+    monkeypatch.setattr(
+        "agents.shot_list_agent.AsyncOpenAI",
+        make_fake_async_openai([SHOT_LIST_CALL_A_PAYLOAD, SHOT_LIST_CALL_B_PAYLOAD]),
+    )
 
     graph = await build_graph()
     initial_state = {
@@ -237,15 +393,22 @@ async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatc
         if event.get("event") == "on_custom_event"
     ]
 
-    # Three custom events now fire across the full chain: truth_extracted (from the
-    # truth extractor), critic_score (from the Meta-Critic fan-in node), and
-    # merge_validated (from the Merge Coherence Validator, §5.4.7, now wired in
-    # after meta_critic). FOUR_GOOD_VARIANTS gives each variant a single body
-    # beat, so the merge candidate's pacing re-check fails unrepairably here and
-    # merge_validator routes straight to the fallback -- see
-    # test_graph_merge_validator.py for that path's dedicated assertions.
+    # Four custom events now fire across the full chain: truth_extracted (truth
+    # extractor), critic_score (Meta-Critic fan-in), merge_validated (Merge
+    # Coherence Validator, §5.4.7), and budget_updated (Budget Gate, §5.7 -- the
+    # only Phase 2 node that dispatches an event; treatment_agent/shot_list_agent
+    # dispatch none). FOUR_GOOD_VARIANTS gives each variant a single body beat, so
+    # the merge candidate's pacing re-check fails unrepairably here and
+    # merge_validator routes straight to the fallback, which still sets a real,
+    # usable winning_script -- see test_graph_merge_validator.py for that path's
+    # dedicated assertions.
     event_names = {e["name"] for e in custom_events}
-    assert event_names == {"truth_extracted", "critic_score", "merge_validated"}, event_names
+    assert event_names == {
+        "truth_extracted",
+        "critic_score",
+        "merge_validated",
+        "budget_updated",
+    }, event_names
     truth_event = next(e for e in custom_events if e["name"] == "truth_extracted")
     assert truth_event["data"]["count"] == len(GOOD_FACTS)
 
@@ -255,3 +418,8 @@ async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatc
         "concept_agent_node must have read product_truths from state (written by "
         "the upstream node) and produced 4 variants from them"
     )
+    # Phase 2 ran to the end: treatment, shot_list and budget_ledger are populated.
+    values = final_state.values
+    assert values["treatment"]["beat_treatments"], "treatment_agent did not run"
+    assert 3 <= len(values["shot_list"]) <= 7, "shot_list_agent did not produce 3-7 shots"
+    assert values["budget_ledger"]["cap"] > 0, "budget_gate did not build a ledger"

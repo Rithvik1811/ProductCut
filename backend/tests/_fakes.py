@@ -60,7 +60,9 @@ class FakeOpenAIClient:
         self.chat = self  # let `client.chat.completions.create` resolve onto us
         self.completions = self
 
-    async def create(self, model: str, messages: list[dict], stream: bool = False) -> _FakeStream:  # noqa: ARG002
+    async def create(  # noqa: ARG002
+        self, model: str, messages: list[dict], stream: bool = False, **_kwargs
+    ) -> _FakeStream:
         content = self._responses[min(self.call_count, len(self._responses) - 1)]
         self.call_count += 1
         return _FakeStream(content)

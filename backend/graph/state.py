@@ -4,7 +4,7 @@ Extend additively only: add new keys, never rename/remove an existing one
 without a sync between KR and RR and a version bump in this docstring.
 Spec of record: docs/TECHNICAL_DOCUMENTATION.md section 6.
 
-version: 4
+version: 5
   - v2: added CompletionDetail + two CriticScore keys (completion, completion_detail)
         and six NotRequired Critic-Chain scratch keys (hook/pacing/body/cta/tone_scores,
         meta_critic_result) to plumb the 5 parallel checkers into the Meta-Critic join.
@@ -23,6 +23,11 @@ version: 4
         CopyEditResult.model_dump() -- written by copy_editor_node, read by
         merge_validator_node's next call to populate that attempt's §6 copy_edit
         sub-object and the "copy_edited_then_accepted" outcome).
+  - v5: Phase 2 research (docs/TECHNICAL_DOCUMENTATION.md §5.6) added two
+        additive enum values to Shot ahead of the Shot-List Agent build:
+        camera_move += "rack_focus", shot_type += "product_in_hand". Mirrored
+        in graph/shot_schema.py's runtime-validated CameraMove/ShotType (C3
+        freeze, docs/BUILD_TASKS.md Phase 2). No field additions/removals.
 """
 from typing import Literal, TypedDict
 from typing_extensions import NotRequired
@@ -121,9 +126,11 @@ class Shot(TypedDict):
     description: str
     shot_type: Literal[
         "hook_hero", "macro_detail", "lifestyle_context",
-        "hero_reframe", "cta_endcard",
+        "hero_reframe", "cta_endcard", "product_in_hand",
     ]
-    camera_move: Literal["push_in", "orbit", "static", "pan", "tilt_up", "pull_back"]
+    camera_move: Literal[
+        "push_in", "orbit", "static", "pan", "tilt_up", "pull_back", "rack_focus",
+    ]
     framing: Literal[
         "fills_frame", "rule_of_thirds_left", "rule_of_thirds_right", "context_wide",
     ]

@@ -1,0 +1,93 @@
+"""
+Unit tests for the C3 shot-list Pydantic schema (graph/shot_schema.py).
+
+Covers the two things this module exists to guarantee mechanically: (1) the
+v2 additive enum values (rack_focus, product_in_hand) added ahead of the
+Shot-List Agent build validate correctly, and (2) the hard no-`product_category`
+rule (extra="forbid") actually rejects a shot carrying that field, since that
+is the concrete anti-genericness mechanism the schema is built around.
+"""
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from graph.shot_schema import validate_shot, validate_shot_list
+
+
+def _shot(**overrides) -> dict:
+    base = {
+        "shot_id": "s1",
+        "t_start": 0.0,
+        "t_end": 4.0,
+        "beat_role": "hook",
+        "description": "A macro push-in on the double-wall seam.",
+        "shot_type": "macro_detail",
+        "camera_move": "push_in",
+        "framing": "fills_frame",
+        "lighting": "soft key light, neutral background, clean commercial look",
+        "negative_prompt": "warped label, distorted logo",
+        "reference_image_id": "photo_1",
+        "text_overlay_zone": "none",
+        "duration_sec": 4.0,
+        "allocated_budget": 0.5,
+        "voiceover_line": "Your coffee is cold in 12 minutes. Mine isn't.",
+        "justification": {
+            "script_quote": "Your coffee is cold in 12 minutes. Mine isn't.",
+            "truth_fact_id": "t3",
+            "treatment_ref": 0,
+        },
+        "status": "pending",
+        "retry_count": 0,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_valid_shot_passes():
+    validate_shot(_shot())
+
+
+def test_rack_focus_camera_move_is_valid():
+    shot = validate_shot(_shot(camera_move="rack_focus"))
+    assert shot.camera_move == "rack_focus"
+
+
+def test_product_in_hand_shot_type_is_valid():
+    shot = validate_shot(_shot(shot_type="product_in_hand"))
+    assert shot.shot_type == "product_in_hand"
+
+
+def test_unknown_camera_move_is_rejected():
+    with pytest.raises(ValidationError):
+        validate_shot(_shot(camera_move="dolly_zoom"))
+
+
+def test_unknown_shot_type_is_rejected():
+    with pytest.raises(ValidationError):
+        validate_shot(_shot(shot_type="explainer_diagram"))
+
+
+def test_product_category_field_is_hard_rejected():
+    """The concrete anti-genericness mechanism: extra="forbid" means a shot
+    carrying `product_category` fails validation outright, not on a prompt-level
+    guard the LLM could ignore."""
+    with pytest.raises(ValidationError):
+        validate_shot(_shot(product_category="running_shoe"))
+
+
+def test_missing_justification_is_rejected():
+    shot = _shot()
+    del shot["justification"]
+    with pytest.raises(ValidationError):
+        validate_shot(shot)
+
+
+def test_validate_shot_list_validates_every_shot():
+    shots = validate_shot_list([_shot(shot_id="s1"), _shot(shot_id="s2", camera_move="orbit")])
+    assert [s.shot_id for s in shots] == ["s1", "s2"]
+
+
+def test_validate_shot_list_raises_on_first_invalid_shot():
+    with pytest.raises(ValidationError):
+        validate_shot_list([_shot(shot_id="s1"), _shot(shot_id="s2", camera_move="bad_move")])

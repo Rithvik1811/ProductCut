@@ -529,12 +529,25 @@ def _winning_script_from_fallback_variant(state: ProductCutState) -> dict:
             f"merge_validator_node: fallback_variant_id={fallback_id!r} not found in "
             "state['script_variants']"
         )
+    beats = [
+        {"t_start": b["t_start"], "t_end": b["t_end"], "line": b["line"]}
+        for b in match.get("beats") or []
+    ]
     return {
-        "text": match.get("text") or " ".join(b["line"] for b in match.get("beats") or []),
-        "beats": [
-            {"t_start": b["t_start"], "t_end": b["t_end"], "line": b["line"]}
-            for b in match.get("beats") or []
-        ],
+        # Always join the beat lines, never prefer `match["text"]` -- the Concept
+        # Agent writes `text` and `beats[].line` in the same call but nothing
+        # guarantees they're byte-identical (contractions, dropped connective
+        # words). Downstream, Treatment Agent and Shot-List Agent both prompt the
+        # model to quote a BEAT'S OWN LINE, while the Justification Validator checks
+        # that quote against `winning_script["text"]` -- any divergence here makes a
+        # correctly-instructed model response fail validation for no real reason.
+        # Confirmed as a real bug via an adversarial integration test pass (Phase 2).
+        # Matches Section 5.4.6's normal cross-pollinated merge path, which already
+        # always joins beat lines (meta_critic.build_merge_candidate) and was never
+        # wrong -- this restores that same invariant here instead of preferring the
+        # variant's separately-written prose.
+        "text": " ".join(b["line"] for b in beats),
+        "beats": beats,
         "source_variant_ids": [fallback_id],
     }
 

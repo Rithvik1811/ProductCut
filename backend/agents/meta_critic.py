@@ -1013,7 +1013,18 @@ def meta_critic(
             body_source_variant_id=only["variant_id"],
             cta_source_variant_id=only["variant_id"],
             merged_beats=merged_beats,
-            merged_text=only.get("text") or " ".join(b["line"] for b in beats),
+            # Always join the beat lines, never prefer `only["text"]` -- the Concept
+            # Agent writes `text` and `beats[].line` in the same call but nothing
+            # guarantees they're byte-identical (contractions, dropped connective
+            # words), and downstream (Treatment Agent, Shot-List Agent) prompt the
+            # model to quote a BEAT'S OWN LINE while the Justification Validator
+            # checks that quote against `winning_script["text"]`. Any divergence
+            # here would make a correctly-instructed model response fail validation
+            # for no real reason -- confirmed as a real bug via an adversarial
+            # integration test pass (Phase 2, see docs/BUILD_TASKS.md). Matches the
+            # normal cross-pollinated merge path's `merged_text` (build_merge_candidate,
+            # this module), which already always joins beat lines and was never wrong.
+            merged_text=" ".join(b["line"] for b in beats),
             target_length_sec=target,
             overall_reasoning=(
                 "Single surviving variant after never_do disqualification — it wins "

@@ -41,6 +41,9 @@ from tests.test_graph_build import (
     CHECKER_ROUTES,
     CONCEPT_AGENT_PAYLOAD,
     HOOK_PAYLOAD,
+    SHOT_LIST_CALL_A_PAYLOAD,
+    SHOT_LIST_CALL_B_PAYLOAD,
+    TREATMENT_PAYLOAD,
     TRUTH_EXTRACTOR_PAYLOAD,
 )
 
@@ -69,6 +72,17 @@ async def test_merge_validator_falls_back_on_unrepairable_pacing_failure(monkeyp
         "agents.critic_llm.OpenAI",
         make_content_routed_sync_openai(CHECKER_ROUTES),
     )
+    # The fallback still sets a real winning_script, so the graph now runs on into
+    # Phase 2 (Treatment Agent -> Shot-List Agent -> Budget Gate). Fake the two
+    # agents' network boundary (Budget Gate is pure code).
+    monkeypatch.setattr(
+        "agents.treatment_agent.AsyncOpenAI",
+        make_fake_async_openai([TREATMENT_PAYLOAD]),
+    )
+    monkeypatch.setattr(
+        "agents.shot_list_agent.AsyncOpenAI",
+        make_fake_async_openai([SHOT_LIST_CALL_A_PAYLOAD, SHOT_LIST_CALL_B_PAYLOAD]),
+    )
 
     graph = await build_graph()
     initial_state = {
@@ -91,6 +105,12 @@ async def test_merge_validator_falls_back_on_unrepairable_pacing_failure(monkeyp
     assert merge_event["data"]["result"]["passed"] is False
     assert merge_event["data"]["result"]["failure_kind"] == "pacing"
 
+    # The fallback path is a real, usable winning_script, so Phase 2 runs on to the
+    # Budget Gate, which dispatches budget_updated (the only Phase 2 custom event).
+    assert "budget_updated" in event_names
+    budget_event = next(e for e in custom_events if e["name"] == "budget_updated")
+    assert budget_event["data"]["ledger"]["cap"] > 0
+
     final = (await graph.aget_state(config)).values
 
     assert "merge_attempts" in final
@@ -112,3 +132,13 @@ async def test_merge_validator_falls_back_on_unrepairable_pacing_failure(monkeyp
     assert len(winning["beats"]) == 3  # the fallback variant's own, unmerged beats
     for beat in winning["beats"]:
         assert set(beat.keys()) == {"t_start", "t_end", "line"}
+
+    # Phase 2 ran off the fallback winning_script: one beat_treatment per beat,
+    # 3-7 shots each with a positive budget and no product_category, and a ledger.
+    assert len(final["treatment"]["beat_treatments"]) == len(winning["beats"])
+    shot_list = final["shot_list"]
+    assert 3 <= len(shot_list) <= 7
+    assert all(shot["allocated_budget"] > 0 for shot in shot_list)
+    assert all("product_category" not in shot for shot in shot_list)
+    assert final["budget_ledger"]["cap"] > 0
+    assert final["budget_ledger"] == budget_event["data"]["ledger"]

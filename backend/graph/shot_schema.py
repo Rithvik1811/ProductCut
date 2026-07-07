@@ -29,7 +29,15 @@ refactoring state.py, which is out of scope here -- state.py is C1's frozen
 contract). If C1's Shot literals change, update these to match and bump the
 version below.
 
-version: 1
+version: 2
+  - v2: Phase 2 research (docs/TECHNICAL_DOCUMENTATION.md SS5.6) added two
+        additive enum values ahead of the Shot-List Agent build: `rack_focus`
+        (CameraMove) and `product_in_hand` (ShotType). Both are structurally
+        hard to justify generically -- a rack focus requires naming two real
+        product referents on different focal planes, and product_in_hand
+        gives `demo`/`proof` beats a real human-interaction composition
+        instead of being forced into `lifestyle_context` or `macro_detail`.
+        This is the C3 freeze (docs/BUILD_TASKS.md, Phase 2, RR).
 """
 from __future__ import annotations
 
@@ -41,10 +49,12 @@ BeatRole = Literal["hook", "problem", "demo", "proof", "cta"]
 
 ShotType = Literal[
     "hook_hero", "macro_detail", "lifestyle_context",
-    "hero_reframe", "cta_endcard",
+    "hero_reframe", "cta_endcard", "product_in_hand",
 ]
 
-CameraMove = Literal["push_in", "orbit", "static", "pan", "tilt_up", "pull_back"]
+CameraMove = Literal[
+    "push_in", "orbit", "static", "pan", "tilt_up", "pull_back", "rack_focus",
+]
 
 Framing = Literal[
     "fills_frame", "rule_of_thirds_left", "rule_of_thirds_right", "context_wide",
