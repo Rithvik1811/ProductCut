@@ -45,9 +45,10 @@ otherwise defaults to `DEFAULT_JOB_BUDGET_CAP` (env-overridable). Raise with the
 team if a real per-job cap belongs in the frozen schema.
 
 Scope note — what this is NOT (identical posture to body_checker.py /
-shot_list_agent.py): NOT wired into the live LangGraph graph
-(backend/graph/build.py). The Shot-List Agent it consumes is not wired in either,
-so this is a standalone, independently-callable/testable node.
+shot_list_agent.py): WIRED into the live LangGraph graph
+(backend/graph/build.py): `shot_list_agent -> budget_gate -> video_gen`. Was a
+standalone, independently-callable/testable node before the Shot-List Agent
+it consumes was wired in; that follow-up wiring has since landed.
 """
 from __future__ import annotations
 
@@ -320,10 +321,11 @@ async def budget_gate_node(
     the dollar `overage` is surfaced in the reasoning trace instead of the event.
 
     `config` defaults to None so the node is directly callable/testable outside a
-    compiled graph; LangGraph injects the real RunnableConfig when this is wired in.
+    compiled graph; LangGraph injects the real RunnableConfig either way.
 
-    Not wired into backend/graph/build.py yet — the Shot-List Agent it consumes is
-    not in the graph either (same standalone posture as shot_list_agent.py).
+    WIRED into backend/graph/build.py (`shot_list_agent -> budget_gate ->
+    video_gen`); was standalone before that, same posture shot_list_agent.py
+    was in before it.
     """
     shots = state.get("shot_list", [])
     product_truths = state.get("product_truths", [])

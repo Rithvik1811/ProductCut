@@ -24,9 +24,11 @@ node ever sees a `SeamFlag`). It does not import, call, or duplicate any of
 that module's actual validation logic.
 
 Scope note -- what this is NOT:
-  * NOT wired into `backend/graph/build.py` (that graph-wiring integration is
-    the orchestrating session's job once both this file and merge_validator.py
-    are complete, to avoid two agents colliding on the same shared file).
+  * WIRED into `backend/graph/build.py` -- `copy_editor -> merge_validator`
+    loop-back, alongside `merge_validator`'s own conditional routing to it.
+    Was left for a follow-up integration once both this file and
+    merge_validator.py were complete (to avoid two agents colliding on the
+    same shared file); that wiring has since landed.
   * NOT an editor of `backend/graph/state.py` -- the CV agent owns the
     additive state-schema changes (`merge_attempts`, `pending_merge_candidate`,
     `winning_script` finalization). This node's `copy_editor_node` wrapper

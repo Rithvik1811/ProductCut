@@ -59,12 +59,13 @@ failure we log it and leave that one shot's status as `"fallback_requested"`
 (still visibly "needs handling", not silently swallowed and not marked done) --
 the same graceful-degradation posture every other node in this pipeline takes.
 
-    NOT wired into graph/build.py yet -- deliberately, mirroring
-    agents/video_gen_node.py's own precedent at initial merge: every Phase 2/3
-    agent in this codebase was built + tested standalone first and wired into
-    the graph as its own integration commit (which also updates the shared
-    graph end-to-end tests). Wiring happened in graph/build.py after this
-    module's standalone test suite landed.
+    WIRED into graph/build.py (`video_gen -> ken_burns_fallback -> continuity_agent`),
+    mirroring agents/video_gen_node.py's own precedent: every Phase 2/3 agent
+    in this codebase was built + tested standalone first, then wired into the
+    graph as its own later integration commit (which also updated the shared
+    graph end-to-end tests). This module's own docstring previously said "NOT
+    wired... yet" even after that integration commit landed -- a stale claim
+    corrected here, not a functional change.
 """
 from __future__ import annotations
 

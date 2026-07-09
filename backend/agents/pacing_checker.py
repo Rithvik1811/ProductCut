@@ -9,9 +9,9 @@ Timing correctness is arithmetic, not judgment -- an LLM would be a strictly
 worse choice here, per the spec's own reasoning.
 
 Output shape mirrors Hook-Checker's: {variant_id: {pacing_score, violations}},
-a lightweight per-variant result Meta-Critic (RR's task, not built yet) will
-merge into the real C1 CriticScore. NOT wired into graph/build.py yet, same
-reason as hook_checker.py -- no Meta-Critic exists to consume it.
+a lightweight per-variant result Meta-Critic merges into the real C1
+CriticScore. WIRED into graph/build.py, same fan-out/fan-in as
+hook_checker.py.
 
 pacing_score formula (this module's own design -- the spec specifies what to
 check, not how to score it): starts at 5, loses 1 point per violation found,
