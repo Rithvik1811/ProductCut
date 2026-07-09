@@ -10,8 +10,11 @@ import pytest
 
 from agents._oss import (
     SIGNED_URL_TTL_SEC,
+    oss_job_asset_key,
     oss_object_key,
     persist_remote_video_to_oss,
+    upload_audio_to_oss,
+    upload_json_to_oss,
     upload_video_to_oss,
 )
 
@@ -81,6 +84,39 @@ def test_persist_remote_video_downloads_uploads_and_cleans_up(tmp_path):
     assert bucket.uploads[0][0] == "jobs/job-7/shots/s2/shot.mp4"
     assert url.startswith("https://oss.example.invalid/jobs/job-7/shots/s2/shot.mp4")
     assert not downloaded.exists()  # temp download cleaned up
+
+
+def test_oss_job_asset_key_namespace_has_no_shot_segment():
+    """Job-level assets (Voiceover + Caption Agent's VO track/captions) live
+    under jobs/{job_id}/, not jobs/{job_id}/shots/{...}/ -- there is no shot_id
+    for an asset produced once per job."""
+    assert oss_job_asset_key("job-42", "voiceover.mp3") == "jobs/job-42/voiceover.mp3"
+
+
+def test_upload_audio_to_oss_puts_file_with_audio_content_type(tmp_path):
+    local = tmp_path / "voiceover.mp3"
+    local.write_bytes(b"fake-mp3")
+    bucket = _FakeBucket()
+
+    url = upload_audio_to_oss(str(local), "job-7", bucket=bucket)
+
+    key, path, headers = bucket.uploads[0]
+    assert key == "jobs/job-7/voiceover.mp3"
+    assert headers["Content-Type"] == "audio/mpeg"
+    assert url.startswith("https://oss.example.invalid/jobs/job-7/voiceover.mp3")
+
+
+def test_upload_json_to_oss_puts_file_with_json_content_type(tmp_path):
+    local = tmp_path / "captions.json"
+    local.write_text("[]")
+    bucket = _FakeBucket()
+
+    url = upload_json_to_oss(str(local), "job-7", "captions.json", bucket=bucket)
+
+    key, path, headers = bucket.uploads[0]
+    assert key == "jobs/job-7/captions.json"
+    assert headers["Content-Type"] == "application/json"
+    assert url.startswith("https://oss.example.invalid/jobs/job-7/captions.json")
 
 
 def test_persist_remote_video_cleans_up_temp_even_on_upload_failure(tmp_path):
