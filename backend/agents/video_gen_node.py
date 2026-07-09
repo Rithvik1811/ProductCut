@@ -1,8 +1,9 @@
 """
 Video-Gen Node — orchestration around Wan2.6-i2v-us (Phase 3).
 Spec of record: docs/TECHNICAL_DOCUMENTATION.md §5.8. Ken-Burns Fallback Node
-(§5.9) is RR's separate, not-yet-built Phase 3 task -- see the INTERFACE
-section below for the hand-off this module assumes.
+(§5.9) is RR's separate Phase 3 task (agents/ken_burns_fallback_node.py, now
+built and wired) -- see the INTERFACE section below for the hand-off this
+module assumes.
 
 Confirmed against the ACTUAL merged code before writing anything (per this
 task's own instruction not to assume field names from docs):
@@ -114,33 +115,34 @@ reducer annotation needed on the frozen `ProductCutState.generated_shots`
 field. `Send()` is genuinely exercised (verified by the graph-level test in
 test_video_gen_node.py), it is just not the OUTER pipeline graph.
 
-NOT WIRED INTO graph/build.py YET -- but for a different reason than every
-prior Phase 2/3 module. Treatment Agent / Shot-List Agent / Budget Gate were
-each left unwired because THEIR OWN upstream dependency wasn't in the graph
-yet. That is no longer true here -- budget_gate IS wired all the way to END
-(graph/build.py, "Phase 2: wire Treatment Agent -> Shot-List Agent -> Budget
-Gate into the graph end-to-end"). This module is left unwired as a deliberate
-scope boundary matching this codebase's actual working rhythm: every prior
-phase's agents were built+merged standalone FIRST, then wired into
-graph/build.py as its own separate, later integration commit (which also
-updated tests/test_graph_end_to_end.py to fake that stage's network
-boundary). Wiring this in is that same follow-up step, not done here to avoid
-touching that shared joint test file outside this task's stated scope.
+WIRED INTO graph/build.py -- this section previously said "NOT WIRED... YET"
+even after the wiring commit landed (a stale claim, corrected here; the
+file's own later "PHASE 4" section below already contradicted it, saying
+"When this node was wired into graph/build.py..."). Real status:
+`budget_gate -> video_gen -> ken_burns_fallback -> continuity_agent ->
+continuity_gate`, with a conditional loop back to `video_gen` for retries
+(Phase 4). Historical note, for context: this was originally left unwired as
+a deliberate scope boundary (every prior phase's agents were built+merged
+standalone first, then wired into graph/build.py as a separate, later
+integration commit, matching this codebase's established rhythm) -- that
+follow-up step has since happened.
 
-KNOWN GAP -- native DashScope SDK region/base-URL configuration.
+RESOLVED -- native DashScope SDK region/base-URL configuration (previously a
+KNOWN GAP, confirmed live during the BUILD_TASKS.md audit's de-risk pass).
 docs/DERISK_VIDEO_GEN_RESULT.md §5 found that the native `dashscope` SDK (not
 the OpenAI-compatible client every other agent in this codebase uses) needs
 the *native* API base (`.../api/v1`, region-scoped to `dashscope-us` for this
-account), which is a DIFFERENT path than `DASHSCOPE_BASE_URL`
-(.env.example's documented OpenAI-*compatible* base for chat/vision). There is
-no separate documented env var for the native SDK's base URL in
-`.env.example` today. This module sets `dashscope.api_key` from
-`DASHSCOPE_API_KEY` and, if present, `dashscope.base_http_api_url` from an
-optional `DASHSCOPE_VIDEO_BASE_URL` env var -- but does NOT invent a required
-new var unilaterally. Confirm the SDK's actual region routing against a real
-account before relying on this path; the derisk script that proved this out
-(`backend/derisk/test_video_gen.py` per that doc) was never committed, so
-there is no in-repo reference configuration to copy.
+account), a DIFFERENT path than `DASHSCOPE_BASE_URL` (.env.example's
+documented OpenAI-*compatible* base for chat/vision). This module sets
+`dashscope.api_key` from `DASHSCOPE_API_KEY` and, if present,
+`dashscope.base_http_api_url` from an optional `DASHSCOPE_VIDEO_BASE_URL` env
+var. CONFIRMED live: setting `DASHSCOPE_VIDEO_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1`
+(same host as `DASHSCOPE_BASE_URL`, native `/api/v1` path instead of
+`/compatible-mode/v1`) against the real account produced two real,
+ffprobe-verified Wan2.6-i2v-us clips (latency 41.7s/92.3s, both within the
+originally documented 42-99s range). `backend/derisk/test_video_gen.py` (the
+reproduction script this KNOWN GAP note said was never committed) now exists
+and was used to produce this confirmation.
 
 SCHEMA STATUS -- RESOLVED (Phase 3 KR/RR sync). Items 1-2 below were originally
 flagged as self-invented, unconfirmed departures from the frozen schemas,
@@ -154,9 +156,9 @@ design choice (not something pending resolution):
      `graph.state.Shot.status`'s Literal, `graph.shot_schema.ShotModel`'s
      `ShotStatus`, and `graph.events.ShotGeneratedPayload.status`'s Literal.
      Still deliberately distinct from the existing "fallback" value: per §5.9,
-     "fallback" is what the (not-yet-built) Ken-Burns node sets once it has
-     actually produced the pan/zoom clip -- "fallback_requested" means "handed
-     off, Ken-Burns hasn't run yet."
+     "fallback" is what the Ken-Burns node (agents/ken_burns_fallback_node.py,
+     now built and wired) sets once it has actually produced the pan/zoom
+     clip -- "fallback_requested" means "handed off, Ken-Burns hasn't run yet."
   2. `failure_reason: {type, detail}` is now a declared, optional field on
      `graph.shot_schema.ShotModel` (`Optional[FailureReasonModel] = None`) and
      `graph.state.Shot` (`NotRequired[FailureReason]`) -- a shot carrying it no

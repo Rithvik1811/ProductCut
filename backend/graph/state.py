@@ -250,7 +250,7 @@ class ProductCutState(TypedDict, total=False):
     body_scores: NotRequired[dict[str, dict]]     # raw Body-Checker output
     cta_scores: NotRequired[dict[str, dict]]      # raw CTA-Checker output
     tone_scores: NotRequired[dict[str, dict]]     # raw Tone-Checker output
-    meta_critic_result: NotRequired[dict]         # full MetaCriticResult.model_dump(); the next task (Merge Coherence Validator) consumes this. NOT winning_script — that is only set once an independent validator passes (not built yet).
+    meta_critic_result: NotRequired[dict]         # full MetaCriticResult.model_dump(); merge_validator_node (agents/merge_validator.py) consumes this. NOT winning_script — that is only set once an independent validator passes.
     critic_scores: dict[str, CriticScore]
     merge_attempts: NotRequired[list[dict]]
     pending_merge_candidate: NotRequired[dict]

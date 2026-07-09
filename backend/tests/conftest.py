@@ -14,6 +14,14 @@ def _fake_dashscope_env(monkeypatch):
     monkeypatch.setenv("MODEL_TEXT", "test-text-model")
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
     monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://example.invalid/compatible-mode/v1")
+    # Voiceover + Caption Agent's TTS calls use a separate, dedicated key/base
+    # URL (this account's TTS access is scoped to a different DashScope
+    # region/workspace than text/vision/video -- see
+    # agents/voiceover_caption_agent.py's module docstring). Tests always
+    # inject a fake synth_fn/mock the SDK call directly, so this value is
+    # never actually used to make a network call -- it just needs to exist.
+    monkeypatch.setenv("DASHSCOPE_TTS_API_KEY", "test-tts-key")
+    monkeypatch.setenv("DASHSCOPE_TTS_BASE_URL", "https://example.invalid/compatible-mode/v1")
     monkeypatch.setenv("OSS_ACCESS_KEY_ID", "test-oss-key")
     monkeypatch.setenv("OSS_ACCESS_KEY_SECRET", "test-oss-secret")
     monkeypatch.setenv("OSS_ENDPOINT", "https://oss.example.invalid")

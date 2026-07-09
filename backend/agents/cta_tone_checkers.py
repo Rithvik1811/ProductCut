@@ -14,9 +14,10 @@ that the Meta-Critic weights separately (CTA 20%, Tone 15%) and that run in
 parallel, not in sequence.
 
 Scope note — what these are NOT:
-  * NOT wired into the live LangGraph graph (backend/graph/build.py). The Concept
-    Agent that produces `ScriptVariant`s does not exist yet, so there is nothing
-    upstream to feed them; they are standalone, independently-callable functions.
+  * WIRED into the live LangGraph graph (backend/graph/build.py): fan out from
+    concept_agent in parallel with Hook-/Pacing-/Body-Checker, fanning back in
+    to meta_critic. Were standalone, independently-callable functions before
+    the Concept Agent existed; that follow-up wiring has since landed.
   * NOT the other checkers. Hook (§5.4.1), Pacing (§5.4.2), Body (§5.4.3),
     Meta-Critic (§5.4.6), Merge Coherence Validator (§5.4.7) and Copy Editor
     (§5.4.8) are separate tasks and are deliberately out of scope here.

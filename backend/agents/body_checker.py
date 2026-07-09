@@ -33,9 +33,11 @@ possible" philosophy:
     same argument with zero shared words), plus the three non-lexical axes.
 
 Scope note — what this is NOT (identical posture to cta_tone_checkers.py):
-  * NOT wired into the live LangGraph graph (backend/graph/build.py). The Concept
-    Agent that produces `ScriptVariant`s does not exist yet; this is a standalone,
-    independently-callable/testable function.
+  * WIRED into the live LangGraph graph (backend/graph/build.py): fans out
+    from concept_agent in parallel with Hook-/Pacing-/CTA-/Tone-Checker,
+    fanning back in to meta_critic. Was a standalone, independently-callable/
+    testable function before the Concept Agent existed; that follow-up wiring
+    has since landed.
   * NOT the other checkers (Hook §5.4.1, Pacing §5.4.2, CTA §5.4.4, Tone §5.4.5,
     Meta-Critic §5.4.6, ...). Body-Checker only.
   * It does NOT populate `graph.state.CriticScore` directly — the Meta-Critic

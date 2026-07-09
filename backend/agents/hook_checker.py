@@ -7,18 +7,18 @@ written justification -- one axis only, not full quality scoring (that's the
 whole Critic Chain + Meta-Critic's job). Output is NOT a C1 CriticScore --
 that's Meta-Critic's merged structure (hook+pacing+cta+tone+composite+
 never_do_violation). This returns a lightweight per-variant
-{hook_score, justification} dict that Meta-Critic (RR's task, not built yet)
-will merge with Pacing/CTA/Tone into the real CriticScore.
+{hook_score, justification} dict that Meta-Critic (agents/meta_critic.py)
+merges with Pacing/CTA/Tone into the real CriticScore.
 
 Score scale is 1-5, matching the spec's explicit language, not an arbitrary
 0-100 -- consistency matters because Meta-Critic computes a weighted
 composite across all 4 checkers; a scale mismatch would silently break that
 math unless every checker uses the same range.
 
-NOT wired into graph/build.py yet: there's no Meta-Critic to merge this
-into state["critic_scores"], and CTA-Checker/Tone-Checker (the siblings this
-is meant to run in parallel with) don't exist yet either. Standalone and
-tested so RR can wire it in once those exist.
+WIRED into graph/build.py: fans out from concept_agent in parallel with
+Pacing-/Body-/CTA-/Tone-Checker, fanning back in to meta_critic (see
+graph/build.py). Was standalone-and-tested before Meta-Critic and its
+siblings existed; that follow-up wiring has since landed.
 """
 from __future__ import annotations
 

@@ -35,11 +35,10 @@ call per beat. A beat still failing after that retry falls back
 deterministically to the doc's literal lowest-risk treatment (static
 framing, shared lighting only) rather than blocking the job.
 
-NOT wired into graph/build.py yet: winning_script is the last thing that
-graph sets (via merge_validator_node), and nothing downstream of it is wired
-in (see graph/build.py's own module docstring). Standalone and tested, same
-as hook_checker.py was before its siblings existed, so whoever wires the
-Shot-List Agent in can also wire this in immediately before it.
+WIRED into graph/build.py: `treatment_agent -> shot_list_agent -> budget_gate
+-> video_gen`, downstream of `winning_script` (set by merge_validator_node).
+Was standalone and tested before that, same posture hook_checker.py was in
+before its siblings existed; that follow-up wiring has since landed.
 """
 from __future__ import annotations
 
@@ -357,12 +356,13 @@ async def generate_treatment(
 async def treatment_agent_node(state: dict) -> dict:
     """LangGraph node wrapper: reads winning_script/product_truths from state.
 
-    Typed as `dict` rather than `ProductCutState` for the parameter to avoid
-    importing graph.state's TypedDict just for a runtime-irrelevant type hint
-    mismatch -- every other node wrapper in this codebase takes the real
-    ProductCutState, but this one isn't wired into graph/build.py yet (see
-    module docstring), so there's no compiled-graph guarantee its input
-    actually matches that shape until it is.
+    Typed as `dict` rather than `ProductCutState` for the parameter -- this
+    node IS wired into graph/build.py now (see module docstring), so the
+    compiled graph does guarantee its input matches that shape; the looser
+    `dict` annotation is a pre-existing minor inconsistency with every other
+    node wrapper in this codebase (which take the real `ProductCutState`),
+    left as-is here since correcting it is a type-hint-only change outside
+    this pass's documentation-accuracy scope, not a functional one.
     """
     treatment = await generate_treatment(
         winning_script=state["winning_script"],

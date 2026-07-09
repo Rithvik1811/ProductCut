@@ -60,11 +60,12 @@ justify a choice by "category" — the word is banned from generated content, an
 shot that smuggles one in.
 
 Scope note — what this is NOT (identical posture to body_checker.py):
-  * NOT wired into the live LangGraph graph (backend/graph/build.py). The
-    Treatment Agent that produces `treatment` (KR's task) does not exist in the
-    graph yet, so this is a standalone, independently-callable/testable function.
+  * WIRED into the live LangGraph graph (backend/graph/build.py):
+    `treatment_agent -> shot_list_agent -> budget_gate`. Was a standalone,
+    independently-callable/testable function before the Treatment Agent
+    existed; that follow-up wiring has since landed.
   * NOT the Budget Gate (§5.7). `allocated_budget` is emitted as an explicit
-    0.0 placeholder here; the Budget Gate node (a separate, not-yet-built task)
+    0.0 placeholder here; the Budget Gate node (wired downstream, graph/build.py)
     computes and overwrites the real grounding-weighted allocation. See the
     comment at the assembly site — 0.0 here is a placeholder, never a real cap.
   * NOT the Justification Validator itself (KR) — see the ownership note above.
@@ -736,9 +737,9 @@ async def _run_call_b(
 async def shot_list_agent_node(state: ProductCutState) -> dict:
     """LangGraph node wrapper: reads winning_script/treatment/product_truths from state.
 
-    Not wired into backend/graph/build.py yet (the Treatment Agent that produces
-    `treatment` is KR's separate task and isn't in the graph) -- standalone and
-    independently testable, exactly like body_checker.py's current status.
+    WIRED into backend/graph/build.py, downstream of the Treatment Agent
+    (`treatment_agent -> shot_list_agent -> budget_gate`). Was standalone and
+    independently testable before that; that follow-up wiring has since landed.
     """
     shots = await generate_shot_list(
         winning_script=state["winning_script"],

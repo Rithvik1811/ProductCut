@@ -40,9 +40,10 @@ JSON is validated by a Pydantic model (`extra="forbid"`, same precedent as the
 other checkers) BEFORE the code does Step 6's re-timing on top of the selection.
 
 Scope note — what this is NOT (identical posture to body_checker.py):
-  * NOT wired into the live LangGraph graph (backend/graph/build.py). The Concept
-    Agent that produces `ScriptVariant`s does not exist on this branch yet; this is
-    a standalone, independently-callable/testable function.
+  * WIRED into the live LangGraph graph (backend/graph/build.py): the fan-in
+    join after the 5 parallel checkers, feeding into merge_validator. Was a
+    standalone, independently-callable/testable function before the Concept
+    Agent existed; that follow-up wiring has since landed.
   * NOT the Merge Coherence Validator (§5.4.7), the Copy Editor (§5.4.8), the
     Concept Agent (§5.3), or any of the five checkers. Meta-Critic only.
   * It does NOT write to `graph.state` (`critic_scores` / `winning_script` /
@@ -1174,8 +1175,8 @@ async def meta_critic_node(state: ProductCutState, config: RunnableConfig) -> di
     Assembles the full CriticScore per variant (every variant, not just survivors —
     disqualification is a merge-selection concern, not a reason to withhold a
     variant's own scores from the trace), calls meta_critic() for the actual
-    cross-pollinated merge candidate, and stashes the raw MetaCriticResult for the
-    next task (Merge Coherence Validator, not built yet) to consume. Does NOT set
+    cross-pollinated merge candidate, and stashes the raw MetaCriticResult for
+    merge_validator_node (wired downstream, graph/build.py) to consume. Does NOT set
     winning_script — per docs/TECHNICAL_DOCUMENTATION.md §5.4.7, that only happens
     once an independent validator passes.
     """

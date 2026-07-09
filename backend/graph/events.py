@@ -23,7 +23,7 @@ Scope note: the Phase 0 scaffold in app/main.py also emits `run.started` /
 (`on_chain_start`, etc.). Those are transport/lifecycle scaffolding, NOT part of
 this frozen business-event contract, and are deliberately excluded here.
 
-version: 3
+version: 4
   - v2: added "merge_validated" event type + MergeValidatedPayload (§5.4.7's
         dashed `CV -.-> FE` streaming edge in the architecture diagram) so a
         merge-candidate retry/fallback is visible on the live stream, not hidden.
@@ -33,6 +33,19 @@ version: 3
         "fallback" value). Formalizes what agents/video_gen_node.py (KR) flagged
         as a self-invented, unconfirmed departure pending a KR/RR sync
         (docs/BUILD_TASKS.md Phase 3).
+  - v4: added "vo_ready" event type + VoReadyPayload (Phase 5, §5.11's
+        `MC -> VOX` parallel branch -- the Voiceover + Caption Agent's own
+        live-stream signal, the VO analog of "shot_generated"). PROPOSED
+        ADDITIVE CHANGE, not confirmed against a body-side dashboard consumer
+        yet: no "vo_ready" (or equivalent) event existed before this agent
+        needed one (checked: the original 10 named events + v2's
+        "merge_validated" cover Ingest through Critic Chain, Treatment,
+        Shot-List, Budget, Video-Gen, drift, interrupt, edit-routing, and job
+        completion -- none of them fire when VO synthesis itself finishes).
+        Flagged here exactly like "fallback_requested" was in v3, pending a
+        sync with whoever builds the dashboard's VO panel; see
+        agents/voiceover_caption_agent.py's module docstring for the fuller
+        rationale.
 """
 from __future__ import annotations
 
@@ -70,6 +83,7 @@ EventType = Literal[
     "edit_routed",
     "job_complete",
     "merge_validated",
+    "vo_ready",
 ]
 
 
@@ -156,6 +170,15 @@ class MergeValidatedPayload(TypedDict):
     attempt_number: int
 
 
+class VoReadyPayload(TypedDict):
+    """Voiceover + Caption Agent (5.11) finished synthesizing the VO audio track
+    and caption-timing JSON for the finalized winning_script -- fires once per
+    job on the `MC -> VOX` parallel branch, the VO analog of `shot_generated`."""
+    voiceover: Voiceover  # mirrors state.voiceover, C1
+    caption_count: int  # number of {text, start_ts, end_ts} caption entries produced
+    degraded: bool  # True when >=1 beat's TTS synthesis permanently failed (silent gap, captions-only for that beat)
+
+
 EventPayload = Union[
     NodeStartedPayload,
     TruthExtractedPayload,
@@ -168,6 +191,7 @@ EventPayload = Union[
     EditRoutedPayload,
     JobCompletePayload,
     MergeValidatedPayload,
+    VoReadyPayload,
 ]
 
 
@@ -224,5 +248,6 @@ __all__ = [
     "EditRoutedPayload",
     "JobCompletePayload",
     "MergeValidatedPayload",
+    "VoReadyPayload",
     "build_event",
 ]

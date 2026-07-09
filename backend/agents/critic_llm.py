@@ -12,7 +12,8 @@ Rather than have each checker re-implement "construct the DashScope OpenAI-compa
 client from env, force JSON output, retry on a transient hiccup, parse the string
 back to a dict", this module centralises that one pattern. It intentionally does
 *not* know anything about scoring rubrics or variant shapes — those live in each
-checker module, so this helper stays reusable by the not-yet-built checkers too.
+checker module, so this helper stays reusable across all of them (Hook/Body/CTA/
+Tone/Meta-Critic, all built and wired) without needing its own changes.
 
 Why the OpenAI SDK and not the native `dashscope` SDK: the text-reasoning models
 are served over DashScope's OpenAI-compatible endpoint (see backend/.env:
