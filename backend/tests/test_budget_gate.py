@@ -240,12 +240,16 @@ def test_floor_case_never_cuts_below_min_shots_and_flags_overage():
 # product_truths lookup: the "specific" categories earn the truth bonus.
 # ===========================================================================
 def test_specific_truth_categories_constant_matches_spec():
+    # "imperfection" deliberately excluded -- Positive-Only Truths fix
+    # (docs/BUILD_TASKS.md "Script Quality (CTA Bridge) + Positive-Only
+    # Truths..." workstream, Problem 1): a scratch/wear-citing shot must not
+    # get a budget priority bump over a color/style/size shot.
     assert SPECIFIC_TRUTH_CATEGORIES == frozenset(
-        {"material", "texture", "construction_detail", "imperfection"}
+        {"material", "texture", "construction_detail"}
     )
 
 
-@pytest.mark.parametrize("truth_id", ["t_material", "t_texture", "t_construction", "t_imperfection"])
+@pytest.mark.parametrize("truth_id", ["t_material", "t_texture", "t_construction"])
 def test_shot_weight_gets_truth_bonus_for_specific_categories(truth_id):
     truths_by_id = {t["truth_id"]: t for t in TRUTHS}
     specific_shot = _shot("s1", "demo", "macro_detail", 4.0, truth_fact_id=truth_id)
@@ -255,6 +259,20 @@ def test_shot_weight_gets_truth_bonus_for_specific_categories(truth_id):
     w_generic = _shot_weight(generic_shot, truths_by_id)
 
     assert w_specific == pytest.approx(w_generic * TRUTH_BONUS)
+
+
+def test_shot_weight_gets_no_truth_bonus_for_imperfection_category():
+    """Positive-Only Truths fix: imperfection is no longer in the "specific"
+    bonus set -- a shot grounded in an imperfection fact gets the same
+    (unbonused) weight as a generic-category shot."""
+    truths_by_id = {t["truth_id"]: t for t in TRUTHS}
+    imperfection_shot = _shot("s1", "demo", "macro_detail", 4.0, truth_fact_id="t_imperfection")
+    generic_shot = _shot("s2", "demo", "macro_detail", 4.0, truth_fact_id="t_color")
+
+    w_imperfection = _shot_weight(imperfection_shot, truths_by_id)
+    w_generic = _shot_weight(generic_shot, truths_by_id)
+
+    assert w_imperfection == pytest.approx(w_generic)
 
 
 def test_truth_bonus_shot_gets_more_budget_than_otherwise_identical_generic_shot():

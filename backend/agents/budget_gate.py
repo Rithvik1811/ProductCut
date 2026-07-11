@@ -155,10 +155,15 @@ TRUTH_BONUS = 1.10  # applied when the cited truth is one of the "specific" cate
 # that one too.
 HUMAN_INTERACTION_SHOT_TYPES = frozenset({"product_in_hand", "worn_in_use"})
 
-# The four ProductTruth categories that make a product SPECIFIC, not generic —
-# the facts you cannot guess without actually looking at the photos (§5.7).
+# The ProductTruth categories that make a product SPECIFIC, not generic — the
+# facts you cannot guess without actually looking at the photos (§5.7).
+# "imperfection" deliberately excluded (Positive-Only Truths fix,
+# docs/BUILD_TASKS.md "Script Quality (CTA Bridge) + Positive-Only Truths..."
+# workstream, Problem 1): a scratch/wear-citing shot must not get a budget
+# priority bump over a color/style/size shot — the whole point of that fix is
+# that a flaw is no longer a preferred grounding detail by default.
 SPECIFIC_TRUTH_CATEGORIES = frozenset(
-    {"material", "texture", "construction_detail", "imperfection"}
+    {"material", "texture", "construction_detail"}
 )
 
 _EPS = 1e-9

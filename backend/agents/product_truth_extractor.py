@@ -66,13 +66,35 @@ contain facts about photo_1's product ONLY -- do not silently pick a subset
 of photos or blend facts from more than one item.
 
 STEP 2 -- only if same_product is true: extract {MIN_FACTS}-{MAX_FACTS} specific,
-non-generic facts about this exact product. Focus on: material, color,
-texture, distinguishing marks, size cues, and shape details.
+non-generic facts about this exact product. Focus on: COLOR, STYLE/SILHOUETTE,
+SIZE, and positive material/texture quality -- these are the sellable,
+positive features a viewer should come away knowing. These are the facts that
+make this exact item specific and desirable, not a generic listing photo.
+
+POSITIVE-ONLY, BY DEFAULT (mandatory): describe what the product IS and what
+makes it good -- never go hunting for scratches, scuffs, wear, damage, or
+other flaws. If a flaw is so obvious it fills the frame, you may note it, but
+do not seek it out, and do not let it crowd out the positive facts above --
+{MIN_FACTS}-{MAX_FACTS} facts should be overwhelmingly color/style/size/
+construction/material observations, not a defect inventory. Only actively look
+for wear/damage/imperfection detail if the seller's brief or freeform notes
+below explicitly ask for an authentic/well-loved/imperfection-forward angle --
+absent that, a flawless-reading product is the correct, desired outcome, not
+a gap to fill.
+
+De-emphasize logos/brand marks/debossed insignia specifically: a logo is a
+minor supporting detail, never the product's most important or most specific
+feature. Only note one if it is genuinely load-bearing for identifying this
+exact item (per the FORM-FACTOR ANCHOR below); do not let it crowd out color,
+style, size, and construction facts.
 
 Rules for each fact:
 - Every fact must be something a person could ONLY know by looking at THIS
-  specific item, not generic category knowledge (e.g. "hairline crack near
-  the handle base" is good, "this is a mug" is not).
+  specific item, not generic category knowledge (e.g. "a deep burgundy with a
+  matte, slightly waxy finish" is good, "this is a mug" is not) -- specific
+  does not mean negative; a precise color/style/size observation is exactly as
+  specific and checkable as a flaw, and is the preferred way to satisfy this
+  rule.
 - If you are not confident about a detail (e.g. small text you can't fully
   read), either omit it or explicitly flag it as uncertain -- never state a
   guess as a confirmed fact.
@@ -84,8 +106,9 @@ Rules for each fact:
   text on the product itself belong under "construction_detail", not
   "brief_or_intake_fact".
 - If you cannot find {MIN_FACTS} genuinely specific facts, look harder before giving up
-  -- check texture, reflections, wear patterns, proportions, and any text/logo
-  detail before settling for fewer.
+  -- check exact color/tone, silhouette, proportions, surface finish, and
+  distinguishing construction (stitching, hardware, closures) before settling
+  for fewer. Do not resort to hunting for wear/damage to hit the count.
 - Every fact must cite which photo it came from.
 
 FORM-FACTOR ANCHOR -- exactly ONE of your facts must use category "form_factor".
@@ -201,6 +224,46 @@ def _has_form_factor(facts: list[ProductTruth]) -> bool:
     """Whether a valid "form_factor" anchor fact survived filtering (see the
     FORM-FACTOR ANCHOR instructions in _build_system_prompt)."""
     return any(f.get("category") == "form_factor" for f in facts)
+
+
+# Positive-Only Truths fix (docs/BUILD_TASKS.md "Script Quality (CTA Bridge) +
+# Positive-Only Truths..." workstream, Problem 1). Owner's words: "we mainly
+# need to still focus on only the positive factors, the vl model should not
+# capture the negatives at all like scratches and all." The prompt-level bias
+# above (POSITIVE-ONLY, BY DEFAULT) is not trusted alone -- same "prompt +
+# deterministic backstop" posture as every other gate in this codebase
+# (_rhyme_problems, _flaw_led_hook_problem, etc.): an "imperfection" fact is
+# dropped from the returned truths by default, full stop, UNLESS the seller's
+# own direction explicitly asks for an authentic/well-worn/character angle.
+# Category stays in the enum (real observational data that might genuinely
+# matter for that explicit ask -- BUILD_TASKS.md's own leaning) but the
+# default path downstream (Concept Agent, Budget Gate) never sees one unless
+# asked for.
+_IMPERFECTION_ANGLE_KEYWORDS = (
+    "authentic", "imperfect", "imperfection", "well-loved", "well loved",
+    "worn-in", "worn in", "lived-in", "lived in", "distressed", "patina",
+    "character", "vintage", "weathered", "broken-in", "broken in",
+)
+
+
+def _wants_imperfection_angle(brief: Optional[str], freeform: Optional[str]) -> bool:
+    """Crude keyword proxy (same posture as agents/_affordance.py) for "the
+    seller explicitly asked for an authentic/imperfection-forward angle" --
+    errs toward false negatives (missing an implied ask just means the
+    default positive-only behavior applies, the safe direction)."""
+    combined = f"{brief or ''} {freeform or ''}".lower()
+    return any(kw in combined for kw in _IMPERFECTION_ANGLE_KEYWORDS)
+
+
+def _filter_imperfection_by_default(
+    facts: list[ProductTruth], wants_imperfection: bool
+) -> list[ProductTruth]:
+    """Drop category="imperfection" facts unless the seller asked for that
+    angle (see module note above) -- the deterministic gate behind the
+    POSITIVE-ONLY, BY DEFAULT prompt rule."""
+    if wants_imperfection:
+        return facts
+    return [f for f in facts if f.get("category") != "imperfection"]
 
 
 def _reprompt_message(rejected: list[dict], missing_form_factor: bool = False) -> str:
@@ -336,6 +399,20 @@ async def extract_product_truths(
             )
             if gained_form_factor or len(retry_valid) > len(valid):
                 valid = retry_valid
+
+        # Positive-Only Truths fix -- applied AFTER the re-prompt/retry decision
+        # above (which must judge the model's genuine compliance, unaffected by
+        # this filter) and BEFORE the count warnings/MAX_FACTS truncation below
+        # (which should reflect what's actually being returned downstream).
+        wants_imperfection = _wants_imperfection_angle(brief, freeform)
+        before_filter = len(valid)
+        valid = _filter_imperfection_by_default(valid, wants_imperfection)
+        if len(valid) < before_filter:
+            logger.info(
+                "Product Truth Extractor: dropped %d imperfection-category fact(s) "
+                "by default (positive-only truths) -- seller_direction did not ask "
+                "for an authentic/imperfection angle.", before_filter - len(valid),
+            )
 
         if len(valid) < MIN_VALID_FACTS_TO_SKIP_REPROMPT:
             logger.warning(

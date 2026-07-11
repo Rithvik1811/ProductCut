@@ -203,6 +203,73 @@ def test_generic_heuristic_does_not_reject_a_compliant_form_factor_sentence():
     assert _is_generic(GOOD_FORM_FACTOR_FACT) is False
 
 
+# ---------------------------------------------------------------------------
+# Positive-Only Truths fix (docs/BUILD_TASKS.md "Script Quality (CTA Bridge) +
+# Positive-Only Truths + Video-Gen Fidelity Fix" workstream, Problem 1):
+# imperfection-category facts are dropped by default, kept only when the
+# seller's brief/freeform notes explicitly ask for an authentic/imperfection
+# angle.
+# ---------------------------------------------------------------------------
+GOOD_IMPERFECTION_FACT = "a faint hairline crease runs diagonally across the lower right corner of the flap"
+
+
+@pytest.mark.asyncio
+async def test_imperfection_fact_dropped_by_default(caplog):
+    payload = _payload(
+        [_truth("t0", GOOD_FORM_FACTOR_FACT, category="form_factor")]
+        + [_truth(f"t{i}", fact) for i, fact in enumerate([GOOD_FACT_1, GOOD_FACT_2, GOOD_FACT_3], start=1)]
+        + [_truth("t_imp", GOOD_IMPERFECTION_FACT, category="imperfection")]
+    )
+    client = FakeOpenAIClient([payload])
+
+    with caplog.at_level("INFO"):
+        result = await extract_product_truths(["http://example.com/a.jpg"], client=client)
+
+    assert all(t["category"] != "imperfection" for t in result)
+    assert not any(t["truth_id"] == "t_imp" for t in result)
+    assert any("dropped 1 imperfection-category fact" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_imperfection_fact_kept_when_brief_asks_for_authentic_angle():
+    payload = _payload(
+        [_truth("t0", GOOD_FORM_FACTOR_FACT, category="form_factor")]
+        + [_truth(f"t{i}", fact) for i, fact in enumerate([GOOD_FACT_1, GOOD_FACT_2, GOOD_FACT_3], start=1)]
+        + [_truth("t_imp", GOOD_IMPERFECTION_FACT, category="imperfection")]
+    )
+    client = FakeOpenAIClient([payload])
+
+    result = await extract_product_truths(
+        ["http://example.com/a.jpg"], brief="a well-loved, authentic leather bag", client=client
+    )
+
+    assert any(t["truth_id"] == "t_imp" for t in result)
+
+
+@pytest.mark.asyncio
+async def test_imperfection_fact_kept_when_freeform_asks_for_character():
+    payload = _payload(
+        [_truth("t0", GOOD_FORM_FACTOR_FACT, category="form_factor")]
+        + [_truth(f"t{i}", fact) for i, fact in enumerate([GOOD_FACT_1, GOOD_FACT_2, GOOD_FACT_3], start=1)]
+        + [_truth("t_imp", GOOD_IMPERFECTION_FACT, category="imperfection")]
+    )
+    client = FakeOpenAIClient([payload])
+
+    result = await extract_product_truths(
+        ["http://example.com/a.jpg"], freeform="lean into the vintage character of this piece", client=client
+    )
+
+    assert any(t["truth_id"] == "t_imp" for t in result)
+
+
+def test_wants_imperfection_angle_keyword_proxy():
+    from agents.product_truth_extractor import _wants_imperfection_angle
+
+    assert _wants_imperfection_angle("a durable everyday backpack", None) is False
+    assert _wants_imperfection_angle("an authentic, well-loved leather bag", None) is True
+    assert _wants_imperfection_angle(None, "show off its patina and character") is True
+
+
 @pytest.mark.asyncio
 async def test_same_product_false_applies_deterministic_photo1_backstop(caplog):
     truths = [
