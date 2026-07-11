@@ -234,9 +234,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
 import re
+import tempfile
 from typing import Annotated, Awaitable, Callable, Optional, TypedDict
+
+import httpx
 
 import dashscope
 from dashscope.aigc.video_synthesis import AioVideoSynthesis
@@ -245,7 +249,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
-from agents._oss import persist_remote_video_to_oss
+from agents._oss import SIGNED_URL_TTL_SEC, persist_remote_video_to_oss
 from agents.budget_gate import RATE_720P, RATE_1080P
 from agents.shot_list_agent import MIN_SHOT_DURATION_SEC
 from graph.state import GeneratedShot, ProductCutState, ProductTruth, Shot, Treatment
@@ -375,6 +379,51 @@ DEFAULT_PROMPT_EXTEND = os.getenv("VIDEO_GEN_PROMPT_EXTEND", "false").lower() in
 # motion composition). Hand-kept in sync with agents/shot_list_agent.py's own
 # `HUMAN_INTERACTION_SHOT_TYPES` (that module's docstring notes the same).
 _HUMAN_INTERACTION_SHOT_TYPES = frozenset({"product_in_hand", "worn_in_use"})
+
+
+def _use_intl_video() -> bool:
+    """True when all three Singapore Wan 2.7 env vars are present -- activates
+    INTL mode for API credentials, model, and OSS bucket selection."""
+    return bool(
+        os.getenv("DASHSCOPE_VIDEO_INTL_API_KEY")
+        and os.getenv("DASHSCOPE_INTL_VIDEO_BASE_URL")
+        and os.getenv("MODEL_VIDEO_INTL")
+    )
+
+
+def _reupload_photos_to_intl_oss(photo_urls: list[str], job_id: str) -> list[str]:
+    """Download each reference photo and re-upload to the Singapore OSS bucket
+    so Wan 2.7 (Singapore endpoint) can fetch them without cross-region failure.
+
+    The output clips are still persisted to the primary US bucket as normal --
+    only the *input* reference images need to live in the SG bucket.
+    Returns signed Singapore URLs in the same order as the input list.
+    """
+    import httpx
+    import oss2
+
+    auth = oss2.Auth(os.environ["OSS_ACCESS_KEY_ID"], os.environ["OSS_ACCESS_KEY_SECRET"])
+    bucket = oss2.Bucket(auth, os.environ["OSS_INTL_ENDPOINT"], os.environ["OSS_INTL_BUCKET"])
+
+    result: list[str] = []
+    for idx, url in enumerate(photo_urls):
+        key = f"jobs/{job_id}/photo_{idx + 1}.jpg"
+        content_type = mimetypes.guess_type(url.split("?")[0])[0] or "image/jpeg"
+        resp = httpx.get(url, timeout=60.0, follow_redirects=True)
+        resp.raise_for_status()
+        fd, local_path = tempfile.mkstemp(suffix=".jpg", prefix="intl_photo_")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(resp.content)
+            bucket.put_object_from_file(key, local_path, headers={"Content-Type": content_type})
+        finally:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+        # Force HTTPS -- Wan 2.7 rejects HTTP image URLs
+        signed_url = bucket.sign_url("GET", key, SIGNED_URL_TTL_SEC, slash_safe=True)
+        result.append(signed_url.replace("http://", "https://", 1))
+        logger.info("Video-Gen Node: re-uploaded photo_%d to SG OSS bucket -> %s", idx + 1, key)
+    return result
 
 
 class VideoGenTimeoutError(Exception):
@@ -682,8 +731,100 @@ def _build_prompt(shot: Shot, product_truths: list[ProductTruth], treatment: Opt
 
 
 # ---------------------------------------------------------------------------
+# Wan 2.7 (Singapore INTL) raw REST caller.
+# Wan 2.7 uses a different input schema than Wan 2.6:
+#   input.media = [{"type": "first_frame", "url": <image_url>}]
+# instead of the SDK's img_url= kwarg which maps to input.img_url (Wan 2.6).
+# The dashscope Python SDK does not yet support this field, so we call the
+# REST API directly with httpx and do our own polling loop.
+# ---------------------------------------------------------------------------
+async def _call_wan_video_gen_intl(
+    *,
+    image_url: str,
+    prompt: str,
+    negative_prompt: str,
+    duration_sec: float,
+    resolution: str,
+    seed: Optional[int] = None,
+) -> str:
+    api_key = os.environ["DASHSCOPE_VIDEO_INTL_API_KEY"]
+    base_url = os.environ["DASHSCOPE_INTL_VIDEO_BASE_URL"]
+    model = os.environ["MODEL_VIDEO_INTL"]
+
+    body: dict = {
+        "model": model,
+        "input": {
+            "prompt": prompt,
+            "media": [{"type": "first_frame", "url": image_url}],
+        },
+        "parameters": {
+            "duration": int(round(duration_sec)),
+            "resolution": resolution,
+        },
+    }
+    if negative_prompt:
+        body["input"]["negative_prompt"] = negative_prompt
+    if seed is not None:
+        body["parameters"]["seed"] = seed
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "X-DashScope-Async": "enable",
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await asyncio.wait_for(
+                client.post(
+                    f"{base_url}/services/aigc/video-generation/video-synthesis",
+                    headers=headers,
+                    json=body,
+                    timeout=30,
+                ),
+                timeout=DEFAULT_WAIT_TIMEOUT_SEC,
+            )
+            if resp.status_code != 200:
+                raise VideoGenAPIError(f"Wan 2.7 submit failed: HTTP {resp.status_code}: {resp.text[:200]}")
+
+            task_id = resp.json()["output"]["task_id"]
+            deadline = asyncio.get_event_loop().time() + DEFAULT_WAIT_TIMEOUT_SEC
+
+            while asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(10)
+                poll = await client.get(
+                    f"{base_url}/tasks/{task_id}",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=30,
+                )
+                data = poll.json()
+                status = data.get("output", {}).get("task_status")
+                if status == "SUCCEEDED":
+                    return data["output"]["video_url"]
+                if status == "FAILED":
+                    code = data.get("output", {}).get("code", "")
+                    message = data.get("output", {}).get("message", "")
+                    raise VideoGenAPIError(
+                        f"Wan 2.7 task FAILED (code={code!r}, message={message!r})"
+                    )
+
+            raise VideoGenTimeoutError(
+                f"Wan 2.7 task did not complete within {DEFAULT_WAIT_TIMEOUT_SEC:.0f}s"
+            )
+    except asyncio.TimeoutError as exc:
+        raise VideoGenTimeoutError(
+            f"Wan 2.7 generation exceeded the {DEFAULT_WAIT_TIMEOUT_SEC:.0f}s wait timeout"
+        ) from exc
+    except (VideoGenTimeoutError, VideoGenAPIError):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise VideoGenAPIError(str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # Real Wan2.6-i2v-us call (native dashscope SDK -- see module docstring's
 # KNOWN GAP on region/base-URL configuration).
+# Dispatches to _call_wan_video_gen_intl when INTL env vars are set.
 # ---------------------------------------------------------------------------
 async def _call_wan_video_gen(
     *,
@@ -694,16 +835,22 @@ async def _call_wan_video_gen(
     resolution: str,
     seed: Optional[int] = None,
 ) -> str:
-    """Submit + wait for one Wan2.6-i2v-us generation. Returns the video URL on
-    success. Raises VideoGenTimeoutError / VideoGenAPIError on failure -- never
-    retries (that policy lives in the caller / Continuity Agent later, not here).
+    """Submit + wait for one Wan generation. Returns the video URL on success.
+    Raises VideoGenTimeoutError / VideoGenAPIError on failure -- never retries.
 
-    `seed` is optional (for future A/B testing and this fix's own reproducibility
-    during manual verification) -- omitted entirely when None so today's random-
-    seed production behavior is unchanged. NOTE (DashScope's own documented
-    caveat, verbatim): "Even with the same seed, results may differ" -- do not
-    assume this gives exact determinism.
+    Routes to `_call_wan_video_gen_intl` (raw REST, Wan 2.7 schema) when INTL
+    env vars are set; otherwise uses the dashscope SDK (Wan 2.6 schema).
     """
+    if _use_intl_video():
+        return await _call_wan_video_gen_intl(
+            image_url=image_url,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            duration_sec=duration_sec,
+            resolution=resolution,
+            seed=seed,
+        )
+
     dashscope.api_key = os.environ["DASHSCOPE_API_KEY"]
     video_base_url = os.getenv("DASHSCOPE_VIDEO_BASE_URL")
     if video_base_url:
@@ -958,11 +1105,19 @@ async def video_gen_node(
     directly callable/testable; LangGraph injects the real RunnableConfig.
     """
     job_id = state.get("job_id", "unknown_job")
+    product_photos = state.get("product_photos", [])
+    if _use_intl_video() and product_photos:
+        logger.info(
+            "Video-Gen Node: INTL mode (Wan 2.7 SG) -- re-uploading %d photo(s) to Singapore OSS bucket.",
+            len(product_photos),
+        )
+        product_photos = await asyncio.to_thread(_reupload_photos_to_intl_oss, product_photos, job_id)
+
     shots, generated = await generate_videos(
         shots=state.get("shot_list", []),
         product_truths=state.get("product_truths", []),
         treatment=state.get("treatment"),
-        product_photos=state.get("product_photos", []),
+        product_photos=product_photos,
     )
 
     n_persisted = await _persist_generated_to_oss(generated, job_id)
