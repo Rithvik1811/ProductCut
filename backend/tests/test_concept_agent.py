@@ -16,10 +16,12 @@ from agents.concept_agent import (
     MIN_HUMAN_PRESENCE_VARIANTS,
     MIN_VARIANTS_AFTER_DEGRADE,
     REQUIRED_VARIANT_COUNT,
+    _abrupt_cta_problem,
     _build_system_prompt,
     _flaw_led_hook_problem,
     _has_human_moment_marker,
     _human_presence_count,
+    _imperfection_citation_problem,
     _rhyme_problems,
     _single_truth_fixation_problems,
     _validate_variant,
@@ -43,7 +45,11 @@ def _beats(target_length_sec: int = 15) -> list[dict]:
     return [
         {"t_start": 0, "t_end": 3, "line": "Your phone slides off every stand -- not this one."},
         {"t_start": 3, "t_end": 8, "line": "This one grips with a dual knurled hinge."},
-        {"t_start": 8, "t_end": target_length_sec, "line": "Tap to get yours."},
+        # CTA Bridge fix: "so" is a recognized bridging connective (see
+        # _CTA_BRIDGE_CONNECTIVES) -- this default beat set is meant to read as
+        # a clean baseline that passes every check, not just the ones that
+        # predate the CTA Bridge fix.
+        {"t_start": 8, "t_end": target_length_sec, "line": "So tap to get yours."},
     ]
 
 
@@ -89,7 +95,7 @@ async def test_four_good_variants_pass_without_reprompt():
 async def test_too_few_grounding_ids_triggers_reprompt_and_fix_is_accepted():
     bad = _variant("v4", "BAB", "how-to", "relief", gti=("t1",))  # only 1, needs 2
     first = _payload(FOUR_GOOD_VARIANTS[:3] + [bad])
-    fixed_v4 = _variant("v4", "BAB", "how-to", "relief", gti=("t1", "t3"))
+    fixed_v4 = _variant("v4", "BAB", "how-to", "relief", gti=("t1", "t2"))
     retry = _payload(FOUR_GOOD_VARIANTS[:3] + [fixed_v4])
     client = FakeOpenAIClient([first, retry])
 
@@ -594,7 +600,7 @@ BAG_TRUTHS = [
 
 
 def _bag_variant(variant_id: str, framework: str, hook_type: str, trigger: str, human: bool = False) -> dict:
-    v = _variant(variant_id, framework, hook_type, trigger, gti=("t1", "t3"))
+    v = _variant(variant_id, framework, hook_type, trigger, gti=("t1", "t2"))
     if human:
         v["beats"][1]["line"] = "She grips it tight on her walk to work."
     return v
@@ -671,3 +677,153 @@ async def test_human_shortfall_degrades_when_retry_still_has_no_people(caplog):
     assert client.call_count == 2
     assert len(result) == REQUIRED_VARIANT_COUNT, "must proceed degraded, never block"
     assert any("person-committed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Positive-Only Truths fix (docs/BUILD_TASKS.md "Script Quality (CTA Bridge) +
+# Positive-Only Truths..." workstream, Problem 1): imperfection-category
+# citation banned by default, allowed only when the seller asked for an
+# authentic/imperfection angle.
+# ---------------------------------------------------------------------------
+
+
+def test_imperfection_citation_banned_by_default():
+    problem = _imperfection_citation_problem(["t1", "t3"], _TRUTH_CATEGORIES, wants_imperfection=False)
+    assert problem is not None
+    assert "t3" in problem
+    assert "off by default" in problem
+
+
+def test_imperfection_citation_allowed_when_seller_wants_it():
+    problem = _imperfection_citation_problem(["t1", "t3"], _TRUTH_CATEGORIES, wants_imperfection=True)
+    assert problem is None
+
+
+def test_imperfection_citation_check_ignores_non_imperfection_ids():
+    problem = _imperfection_citation_problem(["t1", "t2"], _TRUTH_CATEGORIES, wants_imperfection=False)
+    assert problem is None
+
+
+def test_imperfection_citation_banned_through_validate_variant():
+    v = _variant("v1", "hook_problem_product_cta", "pattern interrupt", "curiosity", gti=("t1", "t3"))
+
+    problems = _validate_variant(v, _TRUTH_CATEGORIES, 15, _TRUTH_FACTS, wants_imperfection=False)
+
+    assert any("off by default" in p for p in problems), (
+        f"expected the imperfection-citation ban to fire, got: {problems}"
+    )
+
+
+def test_imperfection_citation_allowed_through_validate_variant_when_requested():
+    v = _variant("v1", "hook_problem_product_cta", "pattern interrupt", "curiosity", gti=("t1", "t3"))
+
+    problems = _validate_variant(v, _TRUTH_CATEGORIES, 15, _TRUTH_FACTS, wants_imperfection=True)
+
+    assert not any("off by default" in p for p in problems)
+
+
+@pytest.mark.asyncio
+async def test_generate_script_variants_bans_imperfection_by_default_and_recovers():
+    imperfection_variant = _variant(
+        "v4", "BAB", "how-to", "relief", gti=("t1", "t3")
+    )  # t3 is imperfection -- banned by default
+    first = _payload(FOUR_GOOD_VARIANTS[:3] + [imperfection_variant])
+    fixed_v4 = _variant("v4", "BAB", "how-to", "relief", gti=("t1", "t2"))
+    retry = _payload(FOUR_GOOD_VARIANTS[:3] + [fixed_v4])
+    client = FakeOpenAIClient([first, retry])
+
+    result = await generate_script_variants("a durable everyday backpack", TRUTHS, client=client)
+
+    assert client.call_count == 2, "citing an imperfection by default must trigger a re-prompt"
+    assert len(result) == REQUIRED_VARIANT_COUNT
+    assert all(
+        not any(_TRUTH_CATEGORIES.get(t) == "imperfection" for t in v["grounding_truth_ids"])
+        for v in result
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_script_variants_allows_imperfection_when_brief_asks_for_authentic_angle():
+    imperfection_variants = [
+        _variant("v1", "hook_problem_product_cta", "pattern interrupt", "curiosity", gti=("t1", "t3")),
+        _variant("v2", "PAS", "bold claim", "FOMO", gti=("t1", "t3")),
+        _variant("v3", "AIDA", "social proof", "recognition", gti=("t1", "t3")),
+        _variant("v4", "BAB", "how-to", "relief", gti=("t1", "t3")),
+    ]
+    client = FakeOpenAIClient([_payload(imperfection_variants)])
+
+    result = await generate_script_variants(
+        "an authentic, well-loved leather bag", TRUTHS, client=client
+    )
+
+    assert client.call_count == 1, "an explicit authentic-angle ask must not trigger a re-prompt"
+    assert len(result) == REQUIRED_VARIANT_COUNT
+
+
+# ---------------------------------------------------------------------------
+# CTA Bridge fix (docs/BUILD_TASKS.md "Script Quality (CTA Bridge)..."
+# workstream, Problem 2): deterministic backstop for a disconnected,
+# tacked-on CTA.
+# ---------------------------------------------------------------------------
+
+
+def test_abrupt_cta_backstop_fires_on_the_documented_failure_shape():
+    # The exact real winning-script failure mode that triggered this fix
+    # (docs/BUILD_TASKS.md, Problem 2 evidence).
+    beats = [
+        {"t_start": 0, "t_end": 3, "line": "She's out the door, bag already on one shoulder."},
+        {"t_start": 3, "t_end": 10, "line": "And that leather grain? It's already getting darker right where her hands grab it."},
+        {"t_start": 10, "t_end": 15, "line": "Grab yours before the next batch sells out."},
+    ]
+
+    problem = _abrupt_cta_problem(beats)
+
+    assert problem is not None
+    assert "disconnected command" in problem
+
+
+def test_abrupt_cta_backstop_does_not_fire_with_bridging_connective():
+    beats = [
+        {"t_start": 0, "t_end": 3, "line": "She's out the door, bag already on one shoulder."},
+        {"t_start": 3, "t_end": 10, "line": "That grain gets darker right where her hands grab it."},
+        {"t_start": 10, "t_end": 15, "line": "So grab yours before the next batch sells out."},
+    ]
+
+    assert _abrupt_cta_problem(beats) is None
+
+
+def test_abrupt_cta_backstop_does_not_fire_with_back_reference():
+    beats = [
+        {"t_start": 0, "t_end": 3, "line": "She's out the door, bag already on one shoulder."},
+        {"t_start": 3, "t_end": 10, "line": "That grain gets darker right where her hands grab it."},
+        {"t_start": 10, "t_end": 15, "line": "That's the mark of a bag that's actually yours -- go get it."},
+    ]
+
+    assert _abrupt_cta_problem(beats) is None
+
+
+def test_abrupt_cta_backstop_skips_longer_cta_lines():
+    # Long CTAs are left to the CTA-Checker's own scoring rubric instead --
+    # this crude a proxy is only trusted on the clearest (short, bare-command)
+    # shape of the failure.
+    beats = [
+        {"t_start": 0, "t_end": 3, "line": "She's out the door, bag already on one shoulder."},
+        {"t_start": 3, "t_end": 10, "line": "That grain gets darker right where her hands grab it."},
+        {"t_start": 10, "t_end": 15, "line": "Grab yours now before the very next production batch quietly sells out for good."},
+    ]
+
+    assert _abrupt_cta_problem(beats) is None
+
+
+def test_abrupt_cta_backstop_fires_through_validate_variant():
+    v = _variant(
+        "v1", "hook_problem_product_cta", "pattern interrupt", "curiosity",
+        gti=("t1", "t2"),
+    )
+    v["beats"][-1]["line"] = "Grab yours before the next batch sells out."
+
+    problems = _validate_variant(v, _TRUTH_CATEGORIES, 15, _TRUTH_FACTS)
+
+    assert any("disconnected command" in p for p in problems), (
+        f"expected the abrupt-CTA backstop to fire, got: {problems}"
+    )

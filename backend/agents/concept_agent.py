@@ -26,6 +26,7 @@ from openai import AsyncOpenAI
 
 from agents._affordance import human_use_suits_product
 from agents._retry import create_completion
+from agents.product_truth_extractor import _wants_imperfection_angle
 from graph.state import ProductCutState, ProductTruth, ScriptVariant
 
 logger = logging.getLogger("productcut.agents.concept_agent")
@@ -36,10 +37,33 @@ MIN_VARIANTS_AFTER_DEGRADE = 2
 MIN_GROUNDING_TRUTH_IDS = 2
 MAX_HOOK_WORDS = 10
 
-# The two graph.state.ProductTruth categories that are near-impossible to
-# guess without actually looking at the photos -- a real anti-genericness
-# lever, not just "cite 2 facts, any 2 facts." See module docstring.
-SPECIFIC_CATEGORIES = frozenset({"imperfection", "construction_detail"})
+# The graph.state.ProductTruth categories that are near-impossible to guess
+# without actually looking at the photos -- a real anti-genericness lever, not
+# just "cite 2 facts, any 2 facts." See module docstring.
+#
+# Positive-Only Truths fix (docs/BUILD_TASKS.md "Script Quality (CTA Bridge) +
+# Positive-Only Truths + Video-Gen Fidelity Fix" workstream, Problem 1):
+# "imperfection" removed -- a flaw must never be the thing that satisfies this
+# rule by default (see IMPERFECTION_ANGLE_KEYWORDS / _imperfection_citation_
+# problem below for the hard ban on citing one at all). "texture"/"form_factor"
+# added in its place: both are genuinely photo-specific, hard-to-guess-
+# generically facts per the owner's explicit redirect toward color/style/size/
+# positive material-texture as the preferred grounding pool, and narrowing
+# this set to "construction_detail" alone (now that imperfection can no longer
+# backstop it) would risk making every variant structurally unvalidatable for
+# a product with zero construction_detail facts.
+SPECIFIC_CATEGORIES = frozenset({"construction_detail", "texture", "form_factor"})
+
+# Positive-Only Truths fix: imperfection-category truths are banned from
+# grounding_truth_ids BY DEFAULT -- reuses the identical keyword proxy
+# agents/product_truth_extractor.py already applies at extraction time (same
+# "seller explicitly asked for an authentic/imperfection angle" signal), so
+# the two gates agree rather than drifting independently. In the common case
+# the extractor has already filtered these out of product_truths entirely;
+# this is the defense-in-depth backstop for any caller that hands
+# concept_agent a truth list some other way (e.g. an explicit authentic-angle
+# ask, or a future caller that doesn't route through the extractor).
+IMPERFECTION_CATEGORY = "imperfection"
 
 # Single-Detail Fixation fix (video-gen-fidelity, 2026-07-11, owner-flagged
 # issue #1 in docs/BUILD_TASKS.md's Backstory-First section): the live
@@ -280,10 +304,33 @@ STORY STRUCTURE (beat-order rule, applies to every variant): open on the
 person (beat 1: the human-moment or curiosity-gap opening from HOOK STRENGTH
 above -- no feature, no flaw, no spec) -> arrive at the product (beats 2-3:
 the product enters by name or a clear reference, its features framed as the
-PAYOFF of the opening moment, never as an inventory list) -> imperfection-
-category truths, if cited at all, appear only AFTER a positive beat has
-already landed, framed as earned character, never as a defect -> close on
-exactly one CTA verb (the rule above -- unchanged).
+PAYOFF of the opening moment, never as an inventory list) -> close on exactly
+one CTA verb (the rule above -- unchanged), EARNED not tacked on (see CTA
+BRIDGE below).
+
+POSITIVE-ONLY GROUNDING (mandatory, reverses the earlier "imperfection as
+earned character" framing): never cite an imperfection-category truth (a
+scratch, scuff, wear mark) in ANY variant -- flaws are off by default. Ground
+every variant in color, style/silhouette, size, and positive
+material/construction facts instead; these are what make the product
+desirable and specific, not a defect inventory. Do not treat a debossed
+logo/brand mark as the star of the script either -- it is a minor supporting
+detail, never the headline truth a variant is built around.
+
+CTA BRIDGE (mandatory): the CTA must land as an earned close, not a
+disconnected command. The beat immediately before the CTA must set up the ask
+-- name the specific feeling, benefit, or moment just established -- and the
+CTA line itself should pick up that thread (a connective like "so"/"that's
+why"/"now", or a direct reference back to what was just said) rather than
+jump-cutting straight into a bare imperative with no bridge.
+  WEAK (abrupt, do NOT do this): "...It's already getting darker right where
+  her hands grab it. Grab yours before the next batch sells out." -- the CTA
+  shares no thread with the line before it; it just starts a new, unrelated
+  imperative.
+  STRONG (same idea, bridged): "...It's already getting darker right where
+  her hands grab it -- that's the mark of a bag that's actually yours. Go
+  make it yours too." -- the CTA explicitly picks up "that's the mark of..."
+  before asking.
 
 {human_centric_block}
 STORY / REAL-WORLD USE (a narrative/visual choice, distinct from the grounding
@@ -449,6 +496,73 @@ def _flaw_led_hook_problem(
                 "a human moment, curiosity gap, or a concrete claim instead"
             )
     return None
+
+
+def _imperfection_citation_problem(
+    gti: list[str], truth_categories: dict[str, str], wants_imperfection: bool
+) -> Optional[str]:
+    """Positive-Only Truths fix: flag ANY citation of an imperfection-category
+    truth when the seller didn't ask for an authentic/imperfection angle --
+    a harder rule than the hook-only flaw check above (that one only stops a
+    flaw from being the OPENING; this stops it being cited anywhere at all,
+    matching the extractor-level default of not surfacing negatives in the
+    first place, see agents/product_truth_extractor.py).
+    """
+    if wants_imperfection:
+        return None
+    imperfection_ids = [t for t in gti if truth_categories.get(t) == IMPERFECTION_CATEGORY]
+    if not imperfection_ids:
+        return None
+    return (
+        f"grounding_truth_ids cites imperfection-category truth(s) {imperfection_ids} -- "
+        "flaws/wear are off by default (positive-only truths); drop this citation and "
+        "ground the variant in a color/style/size/construction/material fact instead, "
+        "unless seller_direction explicitly asks for an authentic/well-loved angle"
+    )
+
+
+# CTA Bridge fix (docs/BUILD_TASKS.md "Script Quality (CTA Bridge)..."
+# workstream, Problem 2). Owner's words: "even though its human centric, its
+# not properly directed, at the end it just says directly shop it. its an
+# abrupt end, not proper." Deterministic backstop for the CTA BRIDGE prompt
+# rule above, same "crude proxy, errs toward false negatives" posture as
+# every other check in this file: only fires on the clearest shape of the
+# documented failure (a SHORT bare imperative with no bridging connective and
+# no back-reference to the prior beat) -- a real bridge can be phrased many
+# ways this can't enumerate, so this only catches the unambiguous case rather
+# than risk rejecting a genuinely earned close it doesn't recognize.
+_CTA_BRIDGE_CONNECTIVES = (
+    "so ", "so,", "so-", "that's why", "that's the", "that's what",
+    "which is why", "which means", "now ", "now,", "no wonder", "and that's",
+)
+_CTA_BRIDGE_REFERENCE_RE = re.compile(r"\b(it|that|this|these|those|one)\b", re.IGNORECASE)
+ABRUPT_CTA_MAX_WORDS = 8  # a bare command this short with no bridge reads as tacked-on
+
+
+def _abrupt_cta_problem(beats: list[dict]) -> Optional[str]:
+    """Flag a CTA beat that has neither a bridging connective nor any
+    back-reference to the immediately preceding beat -- the exact shape of
+    the live-observed failure ("...her hands grab it. Grab yours before the
+    next batch sells out."). Only fires when the CTA is also short (a longer
+    CTA line has more room to be judged a false positive by this crude a
+    proxy); a longer or clearly-bridged CTA is left to the CTA-Checker's own
+    scoring rubric instead."""
+    if len(beats) < 2:
+        return None
+    cta_line = beats[-1].get("line", "")
+    if not cta_line or len(cta_line.split()) > ABRUPT_CTA_MAX_WORDS:
+        return None
+    lowered = cta_line.lower()
+    has_connective = any(c in lowered for c in _CTA_BRIDGE_CONNECTIVES)
+    has_reference = bool(_CTA_BRIDGE_REFERENCE_RE.search(cta_line))
+    if has_connective or has_reference:
+        return None
+    return (
+        f"CTA line '{cta_line}' has no bridging connective (so/that's why/now/...) "
+        "and no reference back to the prior beat -- reads as a disconnected command "
+        "tacked onto the script rather than an earned close; tie it to what the "
+        "preceding beat just established (see the CTA BRIDGE rule)"
+    )
 
 
 _WORD_RE = re.compile(r"[a-z0-9']+")
@@ -732,6 +846,7 @@ def _validate_variant(
     truth_categories: dict[str, str],
     target_length_sec: int,
     truth_facts: Optional[dict[str, str]] = None,
+    wants_imperfection: bool = False,
 ) -> list[str]:
     """Return a list of violation strings (empty = structurally valid).
 
@@ -741,6 +856,10 @@ def _validate_variant(
     `truth_facts` maps truth_id -> fact text, used only by the VOICE lift
     check; optional (defaults to no lift-check) so existing callers that
     don't have fact text handy don't need to change.
+    `wants_imperfection` gates the Positive-Only Truths hard ban (see
+    _imperfection_citation_problem) -- defaults to False (the common case:
+    flaws are off) so existing callers that don't pass it get the new,
+    stricter behavior rather than silently keeping the old one.
     """
     problems = []
     required = ("variant_id", "text", "framework", "hook_type", "emotional_trigger", "grounding_truth_ids", "beats")
@@ -760,7 +879,18 @@ def _validate_variant(
     if unknown:
         problems.append(f"grounding_truth_ids references unknown truth_id(s): {unknown}")
     else:
-        if not any(truth_categories[t] in SPECIFIC_CATEGORIES for t in gti):
+        imperfection_problem = _imperfection_citation_problem(gti, truth_categories, wants_imperfection)
+        if imperfection_problem:
+            problems.append(imperfection_problem)
+        # imperfection only counts toward the "cite something idiosyncratic"
+        # bar when the seller explicitly asked for that angle -- otherwise the
+        # hard ban above already fires, and letting a banned citation ALSO
+        # satisfy this bar would be a contradiction (a flaw the script isn't
+        # even allowed to use "unlocking" the specificity requirement).
+        effective_specific_categories = (
+            SPECIFIC_CATEGORIES | {IMPERFECTION_CATEGORY} if wants_imperfection else SPECIFIC_CATEGORIES
+        )
+        if not any(truth_categories[t] in effective_specific_categories for t in gti):
             problems.append(
                 f"grounding_truth_ids {gti} are all generic categories "
                 f"(none is {SPECIFIC_CATEGORIES}) -- cite at least one idiosyncratic detail"
@@ -833,6 +963,10 @@ def _validate_variant(
         if truth_facts:
             problems.extend(_single_truth_fixation_problems(beats, truth_facts))
 
+        abrupt_cta_problem = _abrupt_cta_problem(beats)
+        if abrupt_cta_problem:
+            problems.append(abrupt_cta_problem)
+
     return problems
 
 
@@ -841,6 +975,7 @@ def _split_valid_invalid(
     truth_categories: dict[str, str],
     target_length_sec: int,
     truth_facts: Optional[dict[str, str]] = None,
+    wants_imperfection: bool = False,
 ) -> tuple[list[ScriptVariant], list[tuple[dict, list[str]]]]:
     """Per-variant structural check, THEN cross-variant dedup, in one pass.
 
@@ -854,7 +989,9 @@ def _split_valid_invalid(
     seen_hooks: set[str] = set()
 
     for v in variants:
-        problems = _validate_variant(v, truth_categories, target_length_sec, truth_facts)
+        problems = _validate_variant(
+            v, truth_categories, target_length_sec, truth_facts, wants_imperfection
+        )
         if problems:
             invalid.append((v, problems))
             continue
@@ -968,6 +1105,13 @@ async def generate_script_variants(
     truth_categories = {t["truth_id"]: t["category"] for t in product_truths}
     truth_facts = {t["truth_id"]: t["fact"] for t in product_truths}
     human_bias = human_use_suits_product(product_truths)
+    # Positive-Only Truths fix: same seller_direction-derived signal
+    # agents/product_truth_extractor.py already applies at extraction time
+    # (see _imperfection_citation_problem's docstring on why the two gates
+    # must agree).
+    wants_imperfection = _wants_imperfection_angle(
+        brief, (seller_direction or {}).get("freeform")
+    )
 
     try:
         messages = [
@@ -978,7 +1122,9 @@ async def generate_script_variants(
         response_text = await create_completion(client, model=model, messages=messages)
         parsed = _parse_json_response(response_text)
         raw_variants = parsed.get("script_variants", [])
-        valid, invalid = _split_valid_invalid(raw_variants, truth_categories, target_length_sec, truth_facts)
+        valid, invalid = _split_valid_invalid(
+            raw_variants, truth_categories, target_length_sec, truth_facts, wants_imperfection
+        )
 
         # Per spec: fewer than 4 variants is its own re-prompt trigger, even
         # when nothing else was individually wrong (the model just under-delivered).
@@ -1003,7 +1149,8 @@ async def generate_script_variants(
             retry_text = await create_completion(client, model=model, messages=messages)
             retry_parsed = _parse_json_response(retry_text)
             retry_valid, _ = _split_valid_invalid(
-                retry_parsed.get("script_variants", []), truth_categories, target_length_sec, truth_facts
+                retry_parsed.get("script_variants", []),
+                truth_categories, target_length_sec, truth_facts, wants_imperfection,
             )
             retry_better = len(retry_valid) > len(valid) or (
                 human_shortfall
