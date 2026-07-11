@@ -96,7 +96,10 @@ async def test_merge_validator_falls_back_on_unrepairable_pacing_failure(monkeyp
     initial_state = {
         "job_id": "test-job-merge-validator",
         "product_photos": ["http://example.com/a.jpg"],
-        "brief": "a durable everyday case",
+        # Positive-Only Truths fix: signals the explicit authentic/well-loved
+        # carve-out -- see test_graph_build.py's GOOD_FACTS/FOUR_GOOD_VARIANTS
+        # comment for why (this shared fixture's narrative is imperfection-led).
+        "brief": "a durable everyday case with authentic, well-loved character",
     }
     config = {"configurable": {"thread_id": "test-job-merge-validator"}}
 

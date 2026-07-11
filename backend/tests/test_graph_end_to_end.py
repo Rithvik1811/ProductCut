@@ -102,7 +102,10 @@ async def test_full_pipeline_ingest_through_ken_burns_fallback(monkeypatch):
     initial_state = {
         "job_id": "test-job-e2e",
         "product_photos": ["http://example.com/a.jpg"],
-        "brief": "a durable everyday case",
+        # Positive-Only Truths fix: signals the explicit authentic/well-loved
+        # carve-out -- see test_graph_build.py's GOOD_FACTS/FOUR_GOOD_VARIANTS
+        # comment for why (this shared fixture's narrative is imperfection-led).
+        "brief": "a durable everyday case with authentic, well-loved character",
         # Seed a tight-but-feasible cap so the Budget Gate exercises its real
         # water-fill allocation (see module docstring).
         "budget_ledger": {"cap": _SEEDED_CAP, "spent": 0.0, "per_shot": {}},
@@ -249,7 +252,10 @@ async def test_full_pipeline_video_gen_failure_routes_to_ken_burns_without_block
     initial_state = {
         "job_id": "test-job-e2e-mixed",
         "product_photos": ["http://example.com/a.jpg"],
-        "brief": "a durable everyday case",
+        # Positive-Only Truths fix: signals the explicit authentic/well-loved
+        # carve-out -- see test_graph_build.py's GOOD_FACTS/FOUR_GOOD_VARIANTS
+        # comment for why (this shared fixture's narrative is imperfection-led).
+        "brief": "a durable everyday case with authentic, well-loved character",
         "budget_ledger": {"cap": _SEEDED_CAP, "spent": 0.0, "per_shot": {}},
     }
     config = {"configurable": {"thread_id": "test-job-e2e-mixed"}}

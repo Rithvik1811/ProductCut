@@ -36,7 +36,7 @@ GOOD_FACTS = [
 FOUR_GOOD_VARIANTS = [
     {
         "variant_id": "v1",
-        "text": "Scratched already? This one shrugs it off. Tap to shop.",
+        "text": "Scratched already? This one shrugs it off. So tap to shop.",
         "framework": "hook_problem_product_cta",
         # Backstory-First fix (video-gen-fidelity): "pattern interrupt" is now a
         # story/curiosity hook_type judged on a human-moment marker, not a
@@ -49,11 +49,11 @@ FOUR_GOOD_VARIANTS = [
         "grounding_truth_ids": ["t1", "t4"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "Scratched already? Not this one."},
                   {"t_start": 3, "t_end": 12, "line": "This one shrugs it off."},
-                  {"t_start": 12, "t_end": 15, "line": "Tap to shop."}],
+                  {"t_start": 12, "t_end": 15, "line": "So tap to shop."}],
     },
     {
         "variant_id": "v2",
-        "text": "Stickers leave rings. Ours won't. Tap to shop.",
+        "text": "Stickers leave rings. Ours won't. So tap to shop.",
         "framework": "PAS",
         "hook_type": "bold claim",
         "emotional_trigger": "FOMO",
@@ -64,29 +64,29 @@ FOUR_GOOD_VARIANTS = [
         "grounding_truth_ids": ["t3", "t4"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "Stickers leave rings, not this base."},
                   {"t_start": 3, "t_end": 12, "line": "Ours won't."},
-                  {"t_start": 12, "t_end": 15, "line": "Tap to shop."}],
+                  {"t_start": 12, "t_end": 15, "line": "So tap to shop."}],
     },
     {
         "variant_id": "v3",
-        "text": "Every detail, debossed with care. Tap to shop.",
+        "text": "Every detail, debossed with care. So tap to shop.",
         "framework": "AIDA",
         "hook_type": "social proof",
         "emotional_trigger": "recognition",
         "grounding_truth_ids": ["t6", "t4"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "Every detail debossed, not printed."},
                   {"t_start": 3, "t_end": 12, "line": "Built to last."},
-                  {"t_start": 12, "t_end": 15, "line": "Tap to shop."}],
+                  {"t_start": 12, "t_end": 15, "line": "So tap to shop."}],
     },
     {
         "variant_id": "v4",
-        "text": "From scratch to spotless. Tap to shop.",
+        "text": "From scratch to spotless. So tap to shop.",
         "framework": "BAB",
         "hook_type": "before/after",
         "emotional_trigger": "relief",
         "grounding_truth_ids": ["t1", "t2"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "From scratch, not spotless -- until now."},
                   {"t_start": 3, "t_end": 12, "line": "Built for real life."},
-                  {"t_start": 12, "t_end": 15, "line": "Tap to shop."}],
+                  {"t_start": 12, "t_end": 15, "line": "So tap to shop."}],
     },
 ]
 
@@ -211,7 +211,11 @@ META_PAYLOAD = json.dumps(
 CHECKER_ROUTES = [
     ("META-CRITIC", META_PAYLOAD),
     ("COLD read of the BODY", BODY_PAYLOAD),
-    ("call-to-action (CTA) clarity", CTA_PAYLOAD),
+    # CTA Bridge fix: the CTA-Checker's prompt opening no longer ends on
+    # "...clarity" verbatim (it now scores clarity AND earned-close/bridge
+    # quality) -- "call-to-action (CTA)" alone is still a unique, stable needle
+    # (the Tone-Checker's prompt never mentions "call-to-action").
+    ("call-to-action (CTA)", CTA_PAYLOAD),
     ("brand-tone critic", TONE_PAYLOAD),
 ]
 
@@ -229,7 +233,7 @@ CHECKER_ROUTES = [
 # tiebreak picks v1). The Justification Validator (KR's real one, shared by both
 # agents) checks each script_quote against winning_script["text"], NOT against a
 # beat's own line -- and v1's text ("Scratched already? This one shrugs it off.
-# Tap to shop.") is NOT the concatenation of its beat lines. So every quote below
+# So tap to shop.") is NOT the concatenation of its beat lines. So every quote below
 # is a verbatim substring of v1's TEXT, which is what actually gets validated.
 _WINNING_TEXT = FOUR_GOOD_VARIANTS[0]["text"]  # v1's text (the fallback winner)
 
@@ -261,7 +265,7 @@ TREATMENT_PAYLOAD = json.dumps(
             {
                 "beat_index": 2,
                 "beat_function": "cta",
-                "script_quote": "Tap to shop.",
+                "script_quote": "So tap to shop.",
                 "truth_fact_id": "t3",
                 "visual_approach": "quick push onto the debossed hinge stamp, then hold on the endcard",
                 "why_not_generic": "The debossed stamp is a real mark on this unit, grounding the closing ask.",
@@ -293,7 +297,7 @@ SHOT_LIST_CALL_A_PAYLOAD = json.dumps(
             {
                 "shot_id": "s3",
                 "beat_role": "cta",
-                "script_quote": "Tap to shop.",
+                "script_quote": "So tap to shop.",
                 "truth_fact_id": "t3",
                 "treatment_ref": 2,
             },
@@ -345,7 +349,7 @@ SHOT_LIST_CALL_B_PAYLOAD = json.dumps(
                 "framing": "fills_frame",
                 "text_overlay_zone": "lower_third",
                 "duration_sec": 3,
-                "voiceover_line": "Tap to shop.",
+                "voiceover_line": "So tap to shop.",
                 "description": (
                     "The debossed hinge stamp resolves into a clean endcard, lower third reserved "
                     "for the composited CTA. Preserve product shape, keep label text, keep "
@@ -403,7 +407,13 @@ async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatc
     initial_state = {
         "job_id": "test-job-graph",
         "product_photos": ["http://example.com/a.jpg"],
-        "brief": "a durable everyday case",
+        # Positive-Only Truths fix: this fixture chain's whole narrative is
+        # built around GOOD_FACTS' imperfection-category facts (a scratch, a
+        # discoloration ring) cited all the way through treatment/shot-list --
+        # signal the explicit "authentic/well-loved" carve-out so the new
+        # imperfection-citation ban doesn't strip them, rather than rewriting
+        # this entire interlinked fixture chain.
+        "brief": "a durable everyday case with authentic, well-loved character",
     }
     config = {"configurable": {"thread_id": "test-job-graph"}}
 

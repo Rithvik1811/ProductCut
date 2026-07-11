@@ -108,7 +108,10 @@ async def _run_graph(monkeypatch, *, cap: float, call_a: str, call_b: str):
     initial_state = {
         "job_id": thread,
         "product_photos": ["http://example.com/a.jpg"],
-        "brief": "a durable everyday case",
+        # Positive-Only Truths fix: signals the explicit authentic/well-loved
+        # carve-out -- see test_graph_build.py's GOOD_FACTS/FOUR_GOOD_VARIANTS
+        # comment for why (this shared fixture's narrative is imperfection-led).
+        "brief": "a durable everyday case with authentic, well-loved character",
         "budget_ledger": {"cap": cap, "spent": 0.0, "per_shot": {}},
     }
     config = {"configurable": {"thread_id": thread}}
