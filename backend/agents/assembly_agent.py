@@ -159,13 +159,17 @@ shots elsewhere:
      unconditionally (never the imperceptible stretch) -- a barely-perceptible
      speed-up is the wrong trade specifically at the one moment the ad should
      feel most settled, not merely "not stretched too far."
-  2. A short fade-out (`AUDIO_FADE_SEC`/`VIDEO_FADE_SEC`) is burned into the
-     very end of the master cut in Stage 2, so the ad now visibly/audibly
-     resolves instead of stopping dead the instant the last caption's window
-     closes. Computed from the REAL summed duration of the rendered Stage-1
-     segments (each segment's own render function now returns the exact
-     duration it produced), not `target`, so the fade lands correctly even
-     when the last segment's "keep" mode made it longer than planned.
+  2. A `TAIL_SILENCE_SEC` (1.0 s) freeze-frame hold is appended to the last
+     segment AFTER its caption window closes, so the viewer's ear finishes the
+     last spoken word before the fade begins. Without this, the fade started
+     right at the word boundary and audibly clipped the final syllable. Then a
+     short fade-out (`AUDIO_FADE_SEC`/`VIDEO_FADE_SEC`) is burned into the
+     very end of the master cut in Stage 2, so the ad resolves cleanly: last
+     word → 0.5 s of held frame → 0.5 s video fade. Fade placement is computed
+     from the REAL summed duration of the rendered Stage-1 segments (each
+     segment's own render function returns the exact duration it produced),
+     not `target`, so it lands correctly even when "keep" mode or the tail pad
+     made the last segment longer than originally planned.
   3. Separately (not the ending fix, but the same "which end of a clip is
      weakest" question): for `product_in_hand`/`worn_in_use` MID-ad shots
      specifically, a `trim`-mode conform now prefers cutting from the START
@@ -218,6 +222,14 @@ STRETCH_MAX_RATIO = 0.15
 AUDIO_FADE_SEC = 0.4
 VIDEO_FADE_SEC = 0.5
 
+# Freeze-frame hold appended AFTER the last caption window closes, before the
+# fade begins. Gives the viewer's ear time to finish the last spoken word
+# before the fade consumes any of it. With TAIL_SILENCE_SEC=1.0 and
+# VIDEO_FADE_SEC=0.5, the sequence is: last word → 0.5 s of held frame →
+# 0.5 s video fade (during which audio also fades). Standard broadcast
+# convention for short-form ad tails is 0.5 – 1.5 s; 1.0 s is the midpoint.
+TAIL_SILENCE_SEC = 1.0
+
 # PHASE 3 point 3 -- mirrored from agents/shot_list_agent.py's own
 # HUMAN_INTERACTION_SHOT_TYPES (hand-kept in sync, same posture
 # video_gen_node.py's own mirrored copy already uses).
@@ -245,8 +257,7 @@ STAGE1_TRACK_TIMESCALE = 15360
 # target would need a different default.
 DEFAULT_CAPTION_FONT_PATH = os.getenv("ASSEMBLY_CAPTION_FONT_PATH", "C:/Windows/Fonts/arialbd.ttf")
 
-_WRAP_WIDTH_LOWER_THIRD = 22
-_WRAP_WIDTH_SIDE = 13
+_SUBTITLE_MAX_CHARS_PER_LINE = 42  # Netflix industry standard; balances readability at any resolution
 
 
 class AssemblyError(Exception):
@@ -444,14 +455,43 @@ def _caption_position_expr(zone: str) -> tuple[str, str]:
         return "w*0.06", "(h-text_h)/2"
     if zone == "right_third":
         return "w*0.94-text_w", "(h-text_h)/2"
-    return "(w-text_w)/2", "h*0.80-text_h"  # lower_third and any other value
+    return "(w-text_w)/2", "h*0.88-text_h"  # lower_third and any other value
 
 
 def _wrap_caption_text(text: str, zone: str) -> str:
-    """ffmpeg's `drawtext` does not auto-wrap -- pre-wrap ourselves (module
-    docstring's researched 20-24 chars/lower_third, 12-14/side widths)."""
-    width = _WRAP_WIDTH_SIDE if zone in ("left_third", "right_third") else _WRAP_WIDTH_LOWER_THIRD
-    return textwrap.fill(text, width=width) if text.strip() else " "
+    """Word-wrap caption text for ffmpeg drawtext.
+
+    All captions use lower-third-style wrapping regardless of zone -- the
+    per-line drawtext calls already hard-code x=(w-text_w)/2 (independent
+    centering), so using a side-zone's narrow 13-char width here would just
+    produce 5-6 cramped lines on an otherwise well-centred subtitle block.
+
+    Targeting 2 lines:
+      * short text (≤ max_chars): 1 line, no wrap
+      * medium text (≤ 2× max_chars): textwrap.wrap → 1-2 lines
+      * long text  (> 2× max_chars): balanced split around the character
+        midpoint, always producing exactly 2 lines
+    """
+    if not text.strip():
+        return " "
+    cap = _SUBTITLE_MAX_CHARS_PER_LINE
+    if len(text) <= cap:
+        return text
+    lines = textwrap.wrap(text, cap)
+    if len(lines) <= 2:
+        return "\n".join(lines)
+    # Force a balanced 2-line split so very long captions never overflow
+    words = text.split()
+    mid = len(text) // 2
+    best_i, best_d = 1, float("inf")
+    acc = 0
+    for i, w in enumerate(words[:-1]):
+        acc += len(w) + 1  # +1 for the space
+        d = abs(acc - mid)
+        if d < best_d:
+            best_d = d
+            best_i = i + 1
+    return " ".join(words[:best_i]) + "\n" + " ".join(words[best_i:])
 
 
 def _captions_for_render(captions: list[dict], shots_by_beat: dict[int, Shot]) -> list[dict]:
@@ -558,7 +598,12 @@ def _render_stage1_segment(
     stream = stream.filter("fps", fps=fps)
     stream = stream.filter("format", "yuv420p")
 
-    stop_pad = pad_after + (conform.freeze_pad_sec if conform.mode == "freeze" else 0.0)
+    # Tail-silence fix: freeze the last frame for TAIL_SILENCE_SEC after the
+    # final caption window closes so the viewer's ear finishes the last word
+    # before the Stage-2 fade consumes any of it. Zero on every other segment.
+    tail_pad_sec = TAIL_SILENCE_SEC if is_last_segment else 0.0
+
+    stop_pad = pad_after + (conform.freeze_pad_sec if conform.mode == "freeze" else 0.0) + tail_pad_sec
     tpad_kwargs: dict = {}
     if pad_before > 1e-6:
         tpad_kwargs["start_duration"] = pad_before
@@ -572,7 +617,7 @@ def _render_stage1_segment(
     # "keep" mode's effective length is the clip's own actual duration, never
     # `target` -- that's the whole point of PHASE 3 point 1 (module docstring).
     effective_target = actual_duration if conform.mode == "keep" else target
-    total_duration = pad_before + effective_target + pad_after
+    total_duration = pad_before + effective_target + pad_after + tail_pad_sec
     out = ffmpeg.output(
         stream, out_path,
         an=None,  # bare `-an` -- discard every clip's own baked-in audio (module docstring)
@@ -640,20 +685,37 @@ def _render_master_cut(
         vstream = video_in.video
         for i, cap in enumerate(captions):
             wrapped = _wrap_caption_text(cap["text"], cap["zone"])
-            text_path = _mktemp(".txt", prefix=f"assembly_caption_{i}_")
-            with open(text_path, "w", encoding="utf-8") as fh:
-                fh.write(wrapped)
-            text_paths.append(text_path)
-            x_expr, y_expr = _caption_position_expr(cap["zone"])
-            vstream = vstream.filter(
-                "drawtext",
-                fontfile=font_path, textfile=text_path,
-                fontsize="h/18", fontcolor="white",
-                box=1, boxcolor="black@0.45", boxborderw=16,
-                borderw=2, bordercolor="black@0.6",
-                x=x_expr, y=y_expr,
-                enable=f"between(t,{cap['start_ts']},{cap['end_ts']})",
-            )
+            lines = wrapped.split("\n")
+            n = len(lines)
+            # Render each line as a separate drawtext call so every line is
+            # independently centered (x=(w-text_w)/2 on its own text_w).
+            # Stack from h*0.88 upward: bottom line at h*0.88-text_h,
+            # next line at h*0.88-2*text_h, etc. No box -- drop shadow only
+            # for a clean, premium look (no chunky background rectangle).
+            for j, line in enumerate(lines):
+                text_path = _mktemp(".txt", prefix=f"assembly_cap_{i}_{j}_")
+                with open(text_path, "w", encoding="utf-8") as fh:
+                    fh.write(line)
+                text_paths.append(text_path)
+                rank = n - j  # bottom line = rank 1, topmost = rank n
+                # Use h/30 as a fixed line-height constant (font h/40 + ~9px
+                # gap) so y is fully static — avoids ffmpeg's runtime text_h
+                # variable bleeding across concurrent drawtext filters in the
+                # filter graph, which was causing visible line stacking bugs.
+                # Base at h*0.95 (bottom 5% margin) per user feedback.
+                y_expr = f"h*0.95 - {rank}*(h/30)"
+                vstream = vstream.filter(
+                    "drawtext",
+                    fontfile=font_path, textfile=text_path,
+                    fontsize="h/40", fontcolor="white",
+                    shadowx=2, shadowy=2, shadowcolor="black@0.9",
+                    x="(w-text_w)/2",
+                    y=y_expr,
+                    # gte/lt (not between) — between() is inclusive on both
+                    # ends so adjacent captions share 1 frame at their boundary
+                    # timestamp, stacking both caption blocks simultaneously.
+                    enable=f"gte(t,{cap['start_ts']})*lt(t,{cap['end_ts']})",
+                )
 
         # Loudness-normalize BEFORE padding (padding only adds trailing silence,
         # which loudnorm should never see or factor into its measurement). Real

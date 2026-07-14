@@ -60,7 +60,12 @@ dashscope_retry = retry(
 
 @dashscope_retry
 async def create_completion(
-    client, *, model: str, messages: list[dict], temperature: Optional[float] = None
+    client,
+    *,
+    model: str,
+    messages: list[dict],
+    temperature: Optional[float] = None,
+    enable_thinking: bool = False,
 ) -> str:
     """The one place every agent should call the DashScope chat endpoint.
 
@@ -78,16 +83,36 @@ async def create_completion(
     The Shot-List Agent (§5.6) is the first caller to need it: its Call A is a
     low-temperature extraction pass and its Call B a warmer grounded-creative
     pass, so the two calls must be able to request different temperatures.
+
+    `enable_thinking` activates Qwen3's extended chain-of-thought mode. When
+    True, the model emits reasoning tokens (its internal scratchpad) before the
+    final answer. These are captured and logged at DEBUG level under the
+    "productcut.thinking" logger so they appear in the console/log stream
+    without blocking the main response. Pass enable_thinking=True to any agent
+    call where deeper reasoning quality matters (concept, treatment, VDA).
     """
-    create_kwargs = {"model": model, "messages": messages, "stream": True}
+    create_kwargs: dict = {"model": model, "messages": messages, "stream": True}
     if temperature is not None:
         create_kwargs["temperature"] = temperature
+    if enable_thinking:
+        create_kwargs["extra_body"] = {"enable_thinking": True}
+
     stream = await client.chat.completions.create(**create_kwargs)
     parts: list[str] = []
+    thinking_parts: list[str] = []
     async for chunk in stream:
         if not chunk.choices:
             continue
-        delta = chunk.choices[0].delta.content
-        if delta:
-            parts.append(delta)
+        delta = chunk.choices[0].delta
+        # Qwen3 thinking tokens arrive on reasoning_content, not content
+        rc = getattr(delta, "reasoning_content", None)
+        if rc:
+            thinking_parts.append(rc)
+        if delta.content:
+            parts.append(delta.content)
+
+    if thinking_parts:
+        thinking_logger = logging.getLogger("productcut.thinking")
+        thinking_logger.debug("".join(thinking_parts))
+
     return "".join(parts)

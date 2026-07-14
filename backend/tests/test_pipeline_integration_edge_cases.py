@@ -54,6 +54,7 @@ from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
 from tests._phase3_graph import (
     patch_assembly_boundaries,
     patch_phase3_boundaries,
+    patch_visual_direction_boundaries,
     patch_voiceover_boundaries,
 )
 from tests.test_graph_build import (
@@ -95,6 +96,7 @@ def _patch_all_boundaries(monkeypatch, *, call_a: str, call_b: str) -> None:
         "agents.shot_list_agent.AsyncOpenAI",
         make_fake_async_openai([call_a, call_b]),
     )
+    patch_visual_direction_boundaries(monkeypatch)
     patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
     patch_voiceover_boundaries(monkeypatch)  # Phase 5: parallel branch off merge_validator
     patch_assembly_boundaries(monkeypatch)  # Phase 5: fan-in join off voiceover + continuity_gate

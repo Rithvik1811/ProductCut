@@ -39,7 +39,7 @@ MIN_VALID_FACTS_TO_SKIP_REPROMPT = 4
 # wrong-object bug).
 _CATEGORIES = (
     "color", "material", "texture",
-    "construction_detail", "imperfection", "scale_cue", "brief_or_intake_fact",
+    "construction_detail", "material_character", "scale_cue", "brief_or_intake_fact",
     "form_factor",
 )
 
@@ -53,7 +53,12 @@ _GENERIC_STOPLIST = (
 
 
 def _build_system_prompt() -> str:
-    return f"""You are analyzing product photos for an ad video pipeline. You will be given
+    return f"""You are an ad copywriter's assistant. Your job is to extract positive, sellable facts
+from product photos — facts that would make a buyer MORE interested in this product.
+You are NOT a quality inspector or defect detector. Every fact you extract should pass
+this test: "Would this make a buyer more likely to want this product?" If not, exclude it.
+
+You are analyzing product photos for an ad video pipeline. You will be given
 2-3 photos, numbered in the order given (photo_1, photo_2, ...).
 
 STEP 1 -- MANDATORY, before anything else: decide whether all photos show the
@@ -106,9 +111,12 @@ Rules for each fact:
   text on the product itself belong under "construction_detail", not
   "brief_or_intake_fact".
 - If you cannot find {MIN_FACTS} genuinely specific facts, look harder before giving up
-  -- check exact color/tone, silhouette, proportions, surface finish, and
-  distinguishing construction (stitching, hardware, closures) before settling
-  for fewer. Do not resort to hunting for wear/damage to hit the count.
+  -- check surface material finish and texture, construction quality indicators (seams, joints,
+  hardware, stitching, assembly precision), distinctive design details, material-specific
+  quality signals that a buyer would value (grain in natural materials, glaze quality in
+  ceramics, machining precision in metal, weave density in textiles), color and light
+  behavior (matte/gloss/sheen), and brand/maker marks and their execution quality
+  before settling for fewer. Do not resort to hunting for wear/damage to hit the count.
 - Every fact must cite which photo it came from.
 
 FORM-FACTOR ANCHOR -- exactly ONE of your facts must use category "form_factor".
@@ -135,6 +143,15 @@ write "not a phone"); one sentence, 30-60 words; list this fact FIRST in
 product_truths; set its "source" to the one photo showing the product alone
 and filling the frame most completely (prefer that photo over one with props/
 context, if you must choose).
+
+CATEGORY DEFINITIONS (special-case categories that need explicit framing):
+"material_character" — a natural variation in the product's material that signals
+authenticity or quality of the underlying material. Examples: grain variation in genuine
+leather (proof it is not synthetic), glaze drips on hand-thrown ceramics (proof of kiln
+firing), hammer marks on hand-forged metal (proof of artisan process), knots or color
+variation in solid wood (proof it is not MDF or veneer), slub texture in natural-fiber
+textiles (proof of natural fiber content). ALWAYS describe these as the buyer would value
+them — as proof of quality and authenticity — never as flaws or damage.
 
 Return ONLY valid JSON in this exact shape, no preamble or commentary. The
 first two keys are REQUIRED in every response, even when there is no mismatch:
@@ -258,12 +275,12 @@ def _wants_imperfection_angle(brief: Optional[str], freeform: Optional[str]) -> 
 def _filter_imperfection_by_default(
     facts: list[ProductTruth], wants_imperfection: bool
 ) -> list[ProductTruth]:
-    """Drop category="imperfection" facts unless the seller asked for that
+    """Drop category="material_character" facts unless the seller asked for that
     angle (see module note above) -- the deterministic gate behind the
     POSITIVE-ONLY, BY DEFAULT prompt rule."""
     if wants_imperfection:
         return facts
-    return [f for f in facts if f.get("category") != "imperfection"]
+    return [f for f in facts if f.get("category") != "material_character"]
 
 
 def _reprompt_message(rejected: list[dict], missing_form_factor: bool = False) -> str:
@@ -409,9 +426,9 @@ async def extract_product_truths(
         valid = _filter_imperfection_by_default(valid, wants_imperfection)
         if len(valid) < before_filter:
             logger.info(
-                "Product Truth Extractor: dropped %d imperfection-category fact(s) "
+                "Product Truth Extractor: dropped %d material_character-category fact(s) "
                 "by default (positive-only truths) -- seller_direction did not ask "
-                "for an authentic/imperfection angle.", before_filter - len(valid),
+                "for an authentic/material_character angle.", before_filter - len(valid),
             )
 
         if len(valid) < MIN_VALID_FACTS_TO_SKIP_REPROMPT:

@@ -99,6 +99,7 @@ from graph.state import (
     ProductTruth,
     Shot,
     Treatment,
+    VisualDirection,
     WinningScript,
 )
 
@@ -269,7 +270,7 @@ HERO_SHOT_MAX_DURATION_RATIO = 0.5        # 30 * 0.5 == HERO_SHOT_MAX_DURATION_S
 # concept_agent.DEFAULT_TARGET_LENGTH_SEC; not imported from there to avoid a
 # cross-module dependency for one constant (same posture as this module's
 # other small duplicated proxies, e.g. its own `_IMPLIED_PERSON_RE` below).
-DEFAULT_TARGET_LENGTH_SEC = 15.0
+DEFAULT_TARGET_LENGTH_SEC = 18.0
 
 
 def _target_duration_sec(winning_script: WinningScript) -> float:
@@ -321,14 +322,21 @@ _IMPLIED_PERSON_RE = re.compile(
 )
 
 
-def _hook_beat_implies_person(winning_script: WinningScript) -> bool:
-    """True iff the winning script's OWN beat 0 (not the whole script) implies
-    a person -- the signal that the hook is a human-moment/curiosity-gap
-    opening (Concept Agent's HOOK STRENGTH rule) rather than a claim-led one,
-    so the opening shot should be a faceless `lifestyle_context` scene
-    instead of the default product-alone `hook_hero`. Scoped to beat 0 only,
-    matching agents/treatment_agent.py's own `_hook_beat_implies_person`.
+def _hook_beat_implies_person(
+    winning_script: WinningScript,
+    visual_direction: Optional[VisualDirection] = None,
+) -> bool:
+    """True iff the hook beat (beat 0) should open on a person.
+
+    When VDA is present, uses its authoritative human_presence decision for beat 0
+    rather than scanning the VO text (which is now product-focused and rarely
+    contains pronouns after the concept-agent VO focus fix). Falls back to the
+    old pronoun scan when VDA is absent.
     """
+    if visual_direction:
+        bvds = visual_direction.get("beat_visual_directions", [])
+        if bvds:
+            return bvds[0].get("human_presence") == "yes"
     beats = winning_script.get("beats") or []
     if not beats:
         return False
@@ -713,6 +721,7 @@ def _reference_image_id(truth_fact_id: str, truths_by_id: dict[str, ProductTruth
 def _build_call_b_system_prompt(
     hero_max_duration_sec: float = HERO_SHOT_MAX_DURATION_SEC,
     hook_implies_person: bool = False,
+    has_visual_direction: bool = False,
 ) -> str:
     hook_structure_note = (
         """This script's hook beat establishes a person in a specific moment (the
@@ -730,7 +739,24 @@ itself (no person established in the opening line). Open on shot_type
 `hook_hero`, product ALONE -- never a human-interaction shot_type for this
 kind of hook."""
     )
-    return f"""You are a cinematographer turning already-justified shots into concrete
+    vda_note = (
+        """VISUAL DIRECTION IS GIVEN: each shot's shot_type and camera_move have been
+pre-decided by the Visual Direction Agent and are listed per-shot in the user
+content below. Use them exactly unless a hard structural rule forces a change
+(CTA must always be cta_endcard; human shots must use static/push_in only).
+For human-interaction shots, use the provided human_action as the core of the
+description's action -- expand it to the full description word count, but keep
+that action as the central motion.
+For every shot, use the provided focus_moment as the sensory focal point the
+description builds toward -- what the viewer's eye should land on at the shot's
+peak. Lead the description with a brief ambient setting phrase drawn from the
+film context (if given in the user content), so the action is grounded in a
+real space rather than floating against white.
+
+"""
+        if has_visual_direction else ""
+    )
+    return f"""{vda_note}You are a cinematographer turning already-justified shots into concrete
 video-generation briefs. Each shot's grounding (its exact script quote + the real
 product fact + the treatment beat it realizes) is FIXED and given to you -- do not
 change it. Your job is only to choose how the camera realizes it.
@@ -869,10 +895,42 @@ Return ONLY valid JSON in this exact shape, no preamble or commentary:
 }}"""
 
 
+def _format_vda_for_call_b(
+    visual_direction: VisualDirection,
+    justifications: list[dict],
+) -> str:
+    """Format VDA per-beat decisions as Call B context. Maps via treatment_ref."""
+    bvd_by_beat: dict[int, dict] = {
+        bvd["beat_index"]: bvd
+        for bvd in visual_direction.get("beat_visual_directions", [])
+    }
+    lines = ["\nVisual direction per shot (shot_type and camera_move are GIVEN — use them):"]
+    for j in justifications:
+        beat_idx = _as_beat_index(j.get("treatment_ref"))
+        bvd = bvd_by_beat.get(beat_idx) if beat_idx is not None else None
+        if not bvd:
+            continue
+        action_line = (
+            f"\n    human_action: {bvd['human_action']}"
+            if bvd.get("human_action") else ""
+        )
+        focus_line = (
+            f"\n    focus_moment: {bvd['focus_moment']}"
+            if bvd.get("focus_moment") else ""
+        )
+        lines.append(
+            f"  {j['shot_id']}: shot_type={bvd['suggested_shot_type']}, "
+            f"camera_move={bvd['suggested_camera_move']}{action_line}{focus_line}\n"
+            f"    framing_notes: {bvd.get('framing_notes', '')}"
+        )
+    return "\n".join(lines)
+
+
 def _build_call_b_user_content(
     justifications: list[dict],
     truths_by_id: dict[str, ProductTruth],
     treatment: Treatment,
+    visual_direction: Optional[VisualDirection] = None,
 ) -> str:
     beats_by_index = {bt["beat_index"]: bt for bt in treatment.get("beat_treatments", [])}
     blocks = []
@@ -885,12 +943,22 @@ def _build_call_b_user_content(
             f"    cited fact: ({truth.get('category', '?')}) {truth.get('fact', '')}\n"
             f"    treatment visual_approach: {beat.get('visual_approach', '')}"
         )
-    return (
-        f"Director persona: {treatment.get('director_persona', '')}\n"
+    film_context_line = ""
+    if visual_direction:
+        story = (visual_direction.get("story_context") or "").strip()
+        if story:
+            film_context_line = f"Film context (Visual Director's briefing — use as ambient setting for descriptions): {story}\n"
+
+    content = (
+        film_context_line
+        + f"Director persona: {treatment.get('director_persona', '')}\n"
         f"Color story (derive the shared lighting from this): {treatment.get('color_story', '')}\n"
         f"Pacing philosophy: {treatment.get('pacing_philosophy', '')}\n\n"
         "Realize each of these validated shots:\n" + "\n".join(blocks)
     )
+    if visual_direction:
+        content += "\n" + _format_vda_for_call_b(visual_direction, justifications)
+    return content
 
 
 def _assemble_shots(
@@ -1025,6 +1093,7 @@ async def generate_shot_list(
     treatment: Treatment,
     product_truths: list[ProductTruth],
     validate_justifications: Callable[..., list[dict]] = _kr_validate_justifications,
+    visual_direction: Optional[VisualDirection] = None,
     client: Optional[AsyncOpenAI] = None,
 ) -> list[Shot]:
     """Run the Shot-List Agent: Call A -> validate (-> one bounded Call A re-prompt
@@ -1050,7 +1119,7 @@ async def generate_shot_list(
         )
     truths_by_id = {t["truth_id"]: t for t in product_truths}
     target_duration_sec = _target_duration_sec(winning_script)
-    hook_implies_person = _hook_beat_implies_person(winning_script)
+    hook_implies_person = _hook_beat_implies_person(winning_script, visual_direction)
 
     try:
         # --- Call A: Justify -------------------------------------------------
@@ -1142,6 +1211,7 @@ async def generate_shot_list(
             client, model, justifications, truths_by_id, treatment,
             target_duration_sec, hook_implies_person,
             human_affordance=human_use_suits_product(product_truths),
+            visual_direction=visual_direction,
         )
         return shots
     finally:
@@ -1158,6 +1228,7 @@ async def _run_call_b(
     target_duration_sec: float = DEFAULT_TARGET_LENGTH_SEC,
     hook_implies_person: bool = False,
     human_affordance: bool = False,
+    visual_direction: Optional[VisualDirection] = None,
 ) -> list[Shot]:
     """Call B + assembly + structural validation, with one bounded Call B retry
     if the assembled list fails structural validation (§5.6 repair posture) OR
@@ -1172,9 +1243,9 @@ async def _run_call_b(
     messages = [
         {
             "role": "system",
-            "content": _build_call_b_system_prompt(hero_max, hook_implies_person),
+            "content": _build_call_b_system_prompt(hero_max, hook_implies_person, has_visual_direction=visual_direction is not None),
         },
-        {"role": "user", "content": _build_call_b_user_content(justifications, truths_by_id, treatment)},
+        {"role": "user", "content": _build_call_b_user_content(justifications, truths_by_id, treatment, visual_direction)},
     ]
 
     for attempt in range(2):  # first try + one bounded retry
@@ -1212,7 +1283,14 @@ async def _run_call_b(
         has_human_shot = any(
             s.get("shot_type") in HUMAN_INTERACTION_SHOT_TYPES for s in assembled
         )
-        if human_affordance and not has_human_shot:
+        # If VDA is present and explicitly assigned human_presence="no" to every
+        # beat, respect that deliberate decision -- don't second-guess it with a
+        # human-affordance re-prompt that would contradict the VDA's intent.
+        vda_suppresses_humans = visual_direction is not None and not any(
+            b.get("human_presence") == "yes"
+            for b in visual_direction.get("beat_visual_directions", [])
+        )
+        if human_affordance and not has_human_shot and not vda_suppresses_humans:
             if attempt == 0:
                 logger.info(
                     "Shot-List Agent: product truths establish a human-use affordance "
@@ -1254,6 +1332,7 @@ async def shot_list_agent_node(state: ProductCutState) -> dict:
         winning_script=state["winning_script"],
         treatment=state["treatment"],
         product_truths=state.get("product_truths", []),
+        visual_direction=state.get("visual_direction"),
     )
     trace_note = f"\n[shot_list_agent] produced {len(shots)} shot(s) via two-call justify->realize flow."
     if len(shots) < MIN_SHOTS:

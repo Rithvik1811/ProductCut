@@ -4,7 +4,7 @@ Extend additively only: add new keys, never rename/remove an existing one
 without a sync between KR and RR and a version bump in this docstring.
 Spec of record: docs/TECHNICAL_DOCUMENTATION.md section 6.
 
-version: 8
+version: 11
   - v2: added CompletionDetail + two CriticScore keys (completion, completion_detail)
         and six NotRequired Critic-Chain scratch keys (hook/pacing/body/cta/tone_scores,
         meta_critic_result) to plumb the 5 parallel checkers into the Meta-Critic join.
@@ -118,6 +118,9 @@ version: 8
         NotRequired + empty-string-safe: a script with no implied person
         (or a Treatment Agent fallback) simply omits/blanks it, and
         video_gen_node.py's Cast section renders nothing in that case.
+  - v11: Visual Direction Agent: adds BeatVisualDirection + VisualDirection TypedDicts
+        and visual_direction: NotRequired[VisualDirection] to ProductCutState.
+        ProductTruth.category: "imperfection" → "material_character".
 """
 from typing import Literal, TypedDict
 from typing_extensions import NotRequired
@@ -140,7 +143,7 @@ class ProductTruth(TypedDict):
     fact: str
     category: Literal[
         "color", "material", "texture", "construction_detail",
-        "imperfection", "scale_cue", "brief_or_intake_fact", "form_factor",
+        "material_character", "scale_cue", "brief_or_intake_fact", "form_factor",
     ]
     source: str
 
@@ -206,6 +209,22 @@ class Treatment(TypedDict):
     # implies a person; see the v10 changelog note above for why this lives
     # here and not on ScriptVariant/Shot.
     character_anchor: NotRequired[str]
+
+
+class BeatVisualDirection(TypedDict):
+    beat_index: int
+    focus_feature_truth_id: str
+    focus_moment: str
+    human_presence: Literal["yes", "no"]
+    human_action: NotRequired[str]
+    suggested_shot_type: str
+    suggested_camera_move: str
+    framing_notes: str
+
+
+class VisualDirection(TypedDict):
+    story_context: str
+    beat_visual_directions: list[BeatVisualDirection]
 
 
 class ShotJustification(TypedDict):
@@ -352,6 +371,8 @@ class ProductCutState(TypedDict, total=False):
     reasoning_trace: str
 
     # populated by Phase 2 (Treatment Agent, Shot-List Agent, Budget Gate)
+    # populated by Visual Direction Agent (between merge_validator and treatment_agent)
+    visual_direction: NotRequired[VisualDirection]
     treatment: Treatment
     shot_list: list[Shot]
     budget_ledger: BudgetLedger

@@ -35,6 +35,7 @@ from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
 from tests._phase3_graph import (
     patch_assembly_boundaries,
     patch_phase3_boundaries,
+    patch_visual_direction_boundaries,
     patch_voiceover_boundaries,
 )
 from tests.test_graph_build import (
@@ -59,6 +60,7 @@ def _patch_upstream(monkeypatch):
     monkeypatch.setattr("agents.concept_agent.AsyncOpenAI", make_fake_async_openai([CONCEPT_AGENT_PAYLOAD]))
     monkeypatch.setattr("agents.hook_checker.AsyncOpenAI", make_fake_async_openai([HOOK_PAYLOAD]))
     monkeypatch.setattr("agents.critic_llm.OpenAI", make_content_routed_sync_openai(CHECKER_ROUTES))
+    patch_visual_direction_boundaries(monkeypatch)
     monkeypatch.setattr("agents.treatment_agent.AsyncOpenAI", make_fake_async_openai([TREATMENT_PAYLOAD]))
     monkeypatch.setattr(
         "agents.shot_list_agent.AsyncOpenAI",

@@ -117,6 +117,7 @@ from agents.pacing_checker import pacing_checker_node
 from agents.product_truth_extractor import product_truth_extractor_node
 from agents.shot_list_agent import shot_list_agent_node
 from agents.treatment_agent import treatment_agent_node
+from agents.visual_direction_agent import visual_direction_agent_node
 from agents.video_gen_node import video_gen_node
 from agents.voiceover_caption_agent import voiceover_caption_agent_node
 from graph.state import ProductCutState
@@ -160,6 +161,8 @@ def _build_uncompiled() -> StateGraph:
 
     # Phase 2 (§5.5-5.7): both "finalize" and "fallback" set a real, usable
     # winning_script (see module docstring) -- neither is a dead end anymore.
+    builder.add_node("visual_direction_agent", visual_direction_agent_node)
+    builder.add_edge("visual_direction_agent", "treatment_agent")
     builder.add_node("treatment_agent", treatment_agent_node)
     builder.add_node("shot_list_agent", shot_list_agent_node)
     builder.add_node("budget_gate", budget_gate_node)
@@ -203,11 +206,12 @@ def _build_uncompiled() -> StateGraph:
         "merge_validator",
         _route_after_merge_validation_with_vo,
         {
-            "finalize": "treatment_agent",
+            "finalize": "visual_direction_agent",      # was "treatment_agent"
             "copy_editor": "copy_editor",
             "meta_critic": "meta_critic",
-            "fallback": "treatment_agent",
+            "fallback": "visual_direction_agent",      # was "treatment_agent"
             "voiceover_caption_agent": "voiceover_caption_agent",
+            "visual_direction_agent": "visual_direction_agent",
         },
     )
     return builder
@@ -232,7 +236,7 @@ def _route_after_merge_validation_with_vo(state: ProductCutState) -> list[str]:
     """
     route = route_after_merge_validation(state)
     if route in ("finalize", "fallback"):
-        return [route, "voiceover_caption_agent"]
+        return ["visual_direction_agent", "voiceover_caption_agent"]
     return [route]
 
 

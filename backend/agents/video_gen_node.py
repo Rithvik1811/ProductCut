@@ -291,7 +291,7 @@ _QUALITY_BOILERPLATE = (
 # visibility into what was lost. This module now enforces the budget itself,
 # cutting deliberately (and logging exactly what got cut) instead of leaving
 # that to an opaque server-side cutoff.
-PROMPT_CHAR_BUDGET = 1400
+PROMPT_CHAR_BUDGET = 2200
 
 # Compressed identity-protection clause -- the SAME four protections the old
 # multi-clause version had (scale-lock, occlusion-continuity, anatomy,
@@ -510,25 +510,17 @@ def _build_prompt(shot: Shot, product_truths: list[ProductTruth], treatment: Opt
     # isolated micro-fact alone under-specifies the subject as a whole object
     # -- exactly what let the i2v model collapse toward a common
     # training-data composition instead of the actual product shape.
-    #
-    # video-gen-fidelity PHASE 4 fix: on a human-interaction shot, DROP the
-    # "Product detail: {fact}" clause here -- confirmed redundant, not just
-    # assumed: agents/shot_list_agent.py's HUMAN-INTERACTION SHOTS rule
-    # requires Call B to "name the EXACT contact point using the
-    # human-contact fact cited above, verbatim" inside Action/Motion, so the
-    # cited truth is already restated there for every human-interaction shot
-    # by construction. Keeping a second copy in Subject only cost budget for
-    # zero new information -- confirmed against a real live run
-    # (derisk/outputs/full_pipeline_live_vikr_session.log) where this
-    # redundant clause was the single largest section of two shots (s2/s3,
-    # 604/613 chars each) that still overflowed Wan's 1,500-char hard
-    # truncation ceiling (1515/1509 chars) even after every other cuttable
-    # section (Quality dropped, Mood compressed, Lighting trimmed) was
-    # already exhausted. The form_factor anchor itself (the actual identity
-    # fix) is untouched -- only the redundant per-shot restatement is cut.
     form = next((t for t in product_truths if t["category"] == "form_factor"), None)
     anchor = f"The product: {form['fact']} " if form else ""
     if is_human_shot:
+        # video-gen-fidelity PHASE 4 fix: on human-interaction shots the
+        # per-shot micro-fact is already required verbatim in Action/Motion by
+        # the Shot-List Agent's HUMAN-INTERACTION SHOTS rule -- restating it in
+        # Subject too is redundant and was confirmed as the single largest
+        # single section pushing real shots past Wan's 1,500-char hard
+        # truncation ceiling. Drop it: use only the form_factor anchor (the
+        # object-identity content that actually helps), or fall back to the
+        # generic reference-photo line if no form_factor truth is present.
         subject = anchor.strip() or "The product shown in the reference photo."
     else:
         subject = (
@@ -710,10 +702,10 @@ def _build_prompt(shot: Shot, product_truths: list[ProductTruth], treatment: Opt
 
     if dropped:
         logger.warning(
-            "Video-Gen Node: shot %s prompt exceeded the %d-char budget -- cut "
+            "Video-Gen Node: shot %s prompt exceeded the 2200-char budget -- cut "
             "deliberately (never left to Wan's server-side truncation): %s. "
             "Final length %d chars.",
-            shot["shot_id"], PROMPT_CHAR_BUDGET, ", ".join(dropped), len(prompt),
+            shot["shot_id"], ", ".join(dropped), len(prompt),
         )
     if len(prompt) > PROMPT_CHAR_BUDGET:
         # Even after every cuttable section (including Action/Motion's own

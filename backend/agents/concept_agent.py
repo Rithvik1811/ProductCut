@@ -31,7 +31,7 @@ from graph.state import ProductCutState, ProductTruth, ScriptVariant
 
 logger = logging.getLogger("productcut.agents.concept_agent")
 
-DEFAULT_TARGET_LENGTH_SEC = 15
+DEFAULT_TARGET_LENGTH_SEC = 18
 REQUIRED_VARIANT_COUNT = 4
 MIN_VARIANTS_AFTER_DEGRADE = 2
 MIN_GROUNDING_TRUTH_IDS = 2
@@ -52,7 +52,11 @@ MAX_HOOK_WORDS = 10
 # this set to "construction_detail" alone (now that imperfection can no longer
 # backstop it) would risk making every variant structurally unvalidatable for
 # a product with zero construction_detail facts.
-SPECIFIC_CATEGORIES = frozenset({"construction_detail", "texture", "form_factor"})
+SPECIFIC_CATEGORIES = frozenset({"construction_detail", "material_character", "texture", "form_factor"})
+
+_TIER1_CATEGORIES = frozenset({"form_factor"})
+_TIER2_CATEGORIES = frozenset({"color", "material", "texture"})
+_TIER3_CATEGORIES = frozenset({"construction_detail", "material_character"})
 
 # Positive-Only Truths fix: imperfection-category truths are banned from
 # grounding_truth_ids BY DEFAULT -- reuses the identical keyword proxy
@@ -63,7 +67,7 @@ SPECIFIC_CATEGORIES = frozenset({"construction_detail", "texture", "form_factor"
 # this is the defense-in-depth backstop for any caller that hands
 # concept_agent a truth list some other way (e.g. an explicit authentic-angle
 # ask, or a future caller that doesn't route through the extractor).
-IMPERFECTION_CATEGORY = "imperfection"
+IMPERFECTION_CATEGORY = "material_character"
 
 # Single-Detail Fixation fix (video-gen-fidelity, 2026-07-11, owner-flagged
 # issue #1 in docs/BUILD_TASKS.md's Backstory-First section): the live
@@ -89,14 +93,13 @@ MIN_DISTINCT_TRUTH_CATEGORIES = 2
 # trips this, which is exactly the observed live failure.
 FIXATION_MIN_BEAT_MENTIONS = 3
 
-# Human-Centric Bias fix (owner-flagged issue #2, same section): when the
-# product's own facts establish a human-use affordance (see
-# agents/_affordance.py), at least this many of the 4 variants must actually
-# commit to an implied person (deterministic proxy: a pronoun-thread beat,
-# reusing _first_pronoun_beat_index below). Product-conditional by explicit
-# owner requirement -- a product with no human-use affordance keeps the
-# original equal-weighting behavior untouched.
-MIN_HUMAN_PRESENCE_VARIANTS = 2
+# VO FOCUS MANDATE (2026-07-12): the VO must describe the PRODUCT to the
+# viewer -- humans appear in the VIDEO, not as third-person subjects narrating
+# actions in the VO. This constant is retained at 0 to keep any downstream
+# callers/analytics that still import it working, but no longer gates the
+# re-prompt loop (see _person_narration_problems below for the new blocking
+# check, which flags person-as-subject-of-action VO lines directly).
+MIN_HUMAN_PRESENCE_VARIANTS = 0
 
 # C1's frozen enum (graph.state.ScriptVariant.framework) -- exactly 4 values,
 # exactly 4 variants required, so "distinct framework per variant" reduces to
@@ -147,24 +150,30 @@ def _format_truths(truths: list[ProductTruth]) -> str:
 
 
 def _build_system_prompt(target_length_sec: int, human_use_suits: bool = False) -> str:
-    human_centric_block = (
-        f"""HUMAN-CENTRIC BIAS (this product's own facts name real human-contact parts --
-a strap, a handle, a body-scale form -- so it is one people wear, carry, or
-hold in daily life):
-- At least {MIN_HUMAN_PRESENCE_VARIANTS} of the 4 variants must commit to an
-  implied person -- a real backstory moment of someone's life WITH the
-  product (per the PRONOUN THREAD rule below), not just product surfaces
-  narrated at the camera. Human presence in a short-form ad's first second is
-  the single strongest scroll-stop lever there is; a wearable/carryable
-  product that never shows a person wearing or carrying it is leaving that
-  on the table.
-- Prefer the HUMAN MOMENT / IN-MEDIAS-RES hook path (HOOK STRENGTH (a)) for
-  those variants: open on the person mid-moment, product visible in-scene.
-- The remaining variants may stay product-led -- this is a bias, not a
-  uniform template; the best-written script still wins.
+    # human_use_suits is preserved as a parameter for future callers/analytics
+    # (e.g. the Visual Direction Agent uses the same affordance signal), but no
+    # longer changes the VO prompt itself -- the VO FOCUS MANDATE below applies
+    # uniformly: humans belong to the VIDEO layer, not the VO layer.
+    vo_focus_block = """VO FOCUS MANDATE (mandatory -- every line of every variant):
+The voiceover describes the PRODUCT: its features, materials, sensory qualities, and the benefit to the viewer.
+Every sentence must answer: "What does this product look like, feel like, or do?"
+
+Hard rules:
+- The product OR the viewer ("you"/"your") must be the grammatical subject of every VO sentence.
+- NEVER make a third-person person ("she"/"he"/"they") the grammatical subject of a VO sentence that narrates their action.
+- Human presence is a VIDEO choice, not a VO choice. The video will show a person demonstrating the feature; the VO names WHAT the product does that makes it worth watching.
+
+WRONG (person as subject, action narrated): "She grabs it on the way out."
+RIGHT (product/viewer as subject): "Grab it on the way out. It's ready."
+
+WRONG: "She spent all morning filling it with ice. It worked great."
+RIGHT: "Fill it up. It stays cold all day."
+
+WRONG: "She kept pressing that button to open it."
+RIGHT: "Press it once. It opens."
+
+Write VO that makes the VIEWER imagine using the product -- second-person address ("you"/"your"/"grab"/"feel") is the correct lever, not a third-person backstory about someone else using it.
 """
-        if human_use_suits else ""
-    )
     return f"""You are a creative director writing short-form ad video scripts ({target_length_sec}
 seconds) for e-commerce product ads.
 
@@ -191,15 +200,15 @@ Grounding (mandatory):
   in the provided truths.
 - Each variant must cite AT LEAST 2 different truth_ids in "grounding_truth_ids".
 - Each variant must cite AT LEAST ONE truth whose category is
-  "imperfection" or "construction_detail" -- these are the specific,
+  "material_character" or "construction_detail" -- these are the specific,
   idiosyncratic details a generic description of this kind of product could
-  never predict (a scuff mark, an odd cutout, a specific hinge mechanism).
+  never predict (a distinctive grain pattern, an odd cutout, a specific hinge mechanism).
   Do not build a variant only from generic material/color/dimension facts;
   those are true of many similar products and produce generic-sounding copy.
 
 FEATURE SPREAD (mandatory -- sell the WHOLE product, not one detail):
 - Each variant's cited truth_ids must span AT LEAST {MIN_DISTINCT_TRUTH_CATEGORIES}
-  DIFFERENT categories -- one idiosyncratic detail (imperfection /
+  DIFFERENT categories -- one idiosyncratic detail (material_character /
   construction_detail, per the rule above) PLUS at least one truth from a
   different category (form_factor, texture, material, color, scale_cue).
   The form_factor truth exists precisely for this: it describes the object
@@ -209,6 +218,83 @@ FEATURE SPREAD (mandatory -- sell the WHOLE product, not one detail):
   (e.g. an entire script about one logo) -- a viewer who watches the whole
   ad should come away knowing 2-3 different things about this product, not
   one thing said three ways.
+
+BEAT-LEVEL NOVELTY (mandatory -- each beat reveals something NEW):
+- Every beat must introduce a different aspect of the product that no earlier beat
+  already covered, even with different words. "Zero leaks" followed by "seals
+  completely tight" states the same fact twice -- never repeat a claim.
+- Aim for: hook → what the product looks like or who it's for; middle beats → what
+  it does and the material/construction evidence that proves it; final body beat →
+  the detail that separates it from any alternative; CTA → earned ask.
+- A viewer who watches the whole ad should feel they learned 3-4 distinct things
+  about the product, each from a different angle. If any two beats make the same
+  point, delete one and replace it with a fact you haven't used yet.
+
+MANDATORY CATEGORY TIERS — every script variant MUST draw truths from ALL THREE tiers,
+regardless of product type:
+
+  TIER 1 — WHOLE-OBJECT IDENTITY: cite at least one truth with category "form_factor".
+  This anchors what the product IS physically. Without it, the script talks about a
+  micro-detail the viewer cannot place because they don't know what they're looking at.
+
+  TIER 2 — MATERIAL / SENSORY QUALITY: cite at least one truth from {{"color", "material", "texture"}}.
+  This is the emotional dimension — why the viewer wants to touch or own the product.
+
+  TIER 3 — IDIOSYNCRATIC DIFFERENTIATOR: cite at least one truth from {{"construction_detail", "material_character"}}.
+  This is the rational "why this one over any other in its category" signal.
+
+A script that cites truths only from the same tier FAILS — e.g., three construction_details
+(zipper + logo + stitching) with no form_factor and no color/material truth. A script missing
+any tier is INVALID regardless of how many truths it cites total.
+
+PLAIN LANGUAGE MANDATE (highest priority — applies to every line of every variant):
+Write every beat line at a 6th-grade reading level. A person watching this ad should
+understand every word without stopping. These five universal principles govern voice
+across any product category:
+
+1. NAME THE ACTION, NOT THE PART.
+   Describe what the product DOES, using a verb. Do not name the component, material,
+   mechanism, manufacturing detail, or surface treatment that makes the action possible.
+   If you find yourself writing a specific part name — a hinge, coating, driver, sole,
+   valve, seam, chamber, lining — delete the part and write only the action it enables.
+   WEAK: "double-wall vacuum insulation" / "EVA midsole with carbon plate" / "impedance-matched drivers"
+   STRONG: "it stays warm until you need it" / "you push off and it's already moving" / "everything comes through clearly"
+
+2. USE WORDS A CURIOUS GRANDMOTHER WOULD RECOGNIZE.
+   Before writing any noun or adjective, ask: "Would someone with no interest in how
+   this product is made recognize this word from everyday conversation?" If the word
+   lives mostly on spec sheets, in technical reviews, or in manufacturing descriptions,
+   replace it with the everyday word for what the viewer SEES or FEELS when using it.
+   This test works for every product category — no wordlist needed. The word fails if
+   a specialist coined it; it passes if a grandparent would use it unprompted.
+
+3. SHOW ONE CONCRETE THING — NO PAIRED ABSTRACTS.
+   Replace any abstract descriptor (warm, deep, rich, sleek, premium, elevated, refined,
+   smooth, bold, purposeful) with a concrete observable action or sensation the viewer
+   can picture in one second. Never join two abstract adjectives with "and."
+   WEAK: "deep and warm" / "soft and strong" / "sleek and refined" / "rich and bold"
+   STRONG: "you barely notice the weight" / "it doesn't pull on you" / "it fits in one hand"
+
+4. WRITE COMPLETE SENTENCES THE WAY A PERSON ACTUALLY SPEAKS.
+   Use a subject, a verb, and an object. Do not drop articles or verbs to sound punchy.
+   Do not invent verb-adjective shortcuts — these are ad-speak, not speech:
+   WEAK: "opens easy" / "seals tight" / "runs quiet" / "wears light"
+   STRONG: "it opens with one hand" / "it closes and nothing comes out" / "you barely notice you're using it"
+
+5. ONE IDEA PER LINE — NO RHYTHM OR RHYME.
+   Each sentence carries exactly one fact or one feeling. If two consecutive lines rhyme,
+   share the same syllable count, or use the same sentence pattern ("X that Y, X that Y"),
+   rewrite one of them. Conversational speech is uneven. Ad copy is patterned. Aim for uneven.
+   WEAK: "chills fast, lasts long" / "light on your feet, quick on the street"
+   STRONG: "it holds up the whole day" / "it's light. You forget it's there."
+
+SENTENCE LENGTH: each beat line is 10 words or fewer, ideally 4–8 words. Two or three
+short sentences per beat is fine — one long descriptive sentence is not.
+
+DECLARATIVE, NOT DECORATIVE: the verb does the work. Delete adverbs and adjectives
+unless the sentence collapses without them.
+WEAK: "It effortlessly glides open." / "It delivers an ergonomic fit."
+STRONG: "It opens." / "It sits right."
 
 VOICE -- SPOKEN, NOT CATALOG (mandatory, every line of every variant):
 The product truths are deliberately written as clinical visual observations so
@@ -222,14 +308,17 @@ Hard rules:
 1. Never reuse 4 or more consecutive words from any truth's text. Translate
    the observation into what a person would SAY or FEEL about it.
 2. Never stack two or more adjectives or hyphenated compound modifiers before
-   a noun ("brass-zippered, dome-topped bag" is a photo caption, not speech).
+   a noun ("matte-coated, heat-treated exterior" is a photo caption, not speech).
    In hook and CTA lines, allow at most ONE adjective before any noun. Put
-   detail AFTER the noun instead: point at it ("that zipper? actual brass")
-   or state its consequence ("so the pull won't snap off").
+   detail AFTER the noun instead -- PREFER the consequence ("it just opens")
+   over pointing at the material ("the actual material, right there"). Naming the
+   outcome is speech; naming the material is jargon.
 3. Never write an attribute-inventory sentence -- a sentence whose only
    content is listing color, material, or shape. Every mention of a physical
    detail must carry what it MEANS for the person: what it survives, saves,
-   signals, or feels like.
+   signals, or feels like. When possible, drop the material/hardware noun
+   entirely and let the consequence stand alone: "It just opens." beats
+   "The chrome latch releases cleanly." Same information for the viewer, no jargon.
 4. Never coin abstract compound nouns no one says out loud ("first-mark
    anxiety"). Say the human version ("that pit in your stomach when you
    scratch something new").
@@ -247,19 +336,66 @@ Hard rules:
    scans like a jingle, not a person talking.
    STRONG: "It's built to take a beating. And it moves when you do." -- same
    claim, no rhyme, still lands.
+   More patterns that fail Rule 7:
+   WEAK: "Crafted with care, built to last anywhere." — 'care'/'anywhere' end-rhyme
+   WEAK: "Ready when you are, near or far." — 'are'/'far' end-rhyme
+   WEAK: "It moves with you, all day through." — 'you'/'through' near-rhyme
 
-CALIBRATION (same truths cited either way -- grounding_truth_ids identical;
-only the voice differs):
-- WEAK (lifted phrasing, do NOT do this): "This brass-zippered, dome-topped
-  bag only gets better." -- three attributes copied out of a visual
-  description and stacked in front of the noun. Nobody says this sentence.
-- STRONG (same two truths, transformed): "That zipper's real brass. And the
-  scuffs? They're the point -- this leather looks better beat up." -- points
-  at the zipper, gives the finish a meaning, still checkable against the
-  photos, and survives being said out loud.
-- WEAK: "Matte, lightly distressed russet-brown leather ages gracefully."
-- STRONG: "It's already a little scuffed -- on purpose. So it never looks
-  ruined. Just worn in."
+8. EVERYDAY USE TEST: Every situation, scenario, or action described in the script
+   must be a plausible, ordinary moment for someone who actually OWNS and USES this product
+   in daily life. Think about how a real person uses this specific product type — in an
+   ordinary moment at home, at work, on a commute, or running an errand. Do not place the
+   product in extreme, aspirational, or implausible scenarios that contradict its normal use
+   case. Ask: "Is this a scene from a real person's actual daily life with this product?"
+   If no, rewrite it.
+
+9. RHYTHM / JINGLE CHECK: Beyond end-rhymes (Rule 7), avoid ALL of these patterns:
+   * Alliterative triples: "simple, smooth, strong" / "clean, crisp, clear"
+   * Rule-of-three feature lists: "It organizes, protects, and performs."
+   * Parallel present-tense catalog claims: "It holds everything. It goes anywhere. It does it all."
+   * Iambic rhythm locks: "Built to last, made to move fast" (da-DUM-da-DUM rhythm)
+   * Superlative stacking: "the ultimate, most versatile, best-in-class solution"
+   These patterns make the script sound like a jingle or a marketing deck, not a person talking.
+   READ EACH SENTENCE ALOUD. If it has a rhythm or cadence that sounds like an ad, rewrite it
+   to sound like something you would actually say to a friend holding this product.
+
+10. NO SING-SONG PAIRS OR SHORTCUTS: two patterns that slip through Rules 7 and 9 but still fail:
+    * Two-adjective pairs joined by "and" that scan like a jingle: "deep and warm",
+      "soft and strong", "smooth and quiet". Pick ONE concrete consequence instead
+      ("you barely notice it after an hour") rather than stacking two adjectives.
+    * Verb-adjective shortcuts with odd grammar: "opens easy", "wears nice", "fits great".
+      Use plain grammar: "just opens", "still looks new", "fits everything".
+
+CALIBRATION — the same product truths, two different voices. The grounding_truth_ids
+are identical in each pair; only the phrasing changes. No specific product is named
+because the pattern is what matters — it applies identically to any category:
+
+- WEAK (lifted phrasing, do NOT do this): "This multi-layer, thermally-bonded,
+  precision-engineered construction delivers consistent performance in all conditions."
+  -- technical attributes stacked in a row. Nobody says this.
+- STRONG (same truths, spoken): "It works. Every time. And it doesn't fall apart."
+  -- short declarative sentences; every word is one a 12-year-old would use.
+
+- WEAK: "Premium-grade, UV-resistant, anti-fatigue surface treatment maintains
+  aesthetic integrity over extended use."
+- STRONG: "It still looks good. A year later, still good."
+
+WEAK (out-of-context scenario): "She conquers impossible conditions, pushing past every
+limit at the edge of the world."
+STRONG: "She uses it every day. Same thing, same spot, same result."
+[STRONG shows actual daily life. WEAK is an aspirational fantasy with no connection to
+how any ordinary person actually uses this product.]
+
+WEAK (catalog speak): "This product features a proprietary reinforced-polymer substrate
+with micro-bonded seaming for superior load distribution."
+STRONG: "You push it. It holds. You stop worrying about it."
+[STRONG names what a person NOTICES. WEAK is a spec sheet read aloud. Technical
+manufacturing terms are jargon; the outcome the person experiences is plain speech.]
+
+WEAK (rule-of-three jingle): "Perform better. Live fuller. Go further."
+STRONG: "You'll use it harder than you planned. It handles it."
+[STRONG sounds like a person who's used it. WEAK is advertising copy.]
+
 None of this loosens grounding: the STRONG lines are MORE specific, because a
 consequence can only be written from the real detail, while copied phrasing
 is just the truth list read back.
@@ -277,21 +413,21 @@ Per-variant requirements:
   number:
   (a) HUMAN MOMENT / IN-MEDIAS-RES -- drop the viewer into a specific
       person's specific instant, product visible in-scene but not yet
-      pitched. Example: "She's out the door before sunrise, bag already on
-      one shoulder."
+      pitched. Example: "She's out the door before sunrise. It's already in
+      her hand."
   (b) CURIOSITY GAP grounded in a real detail, resolved LATER in the script
       -- never a bare, unpaid tease with nothing to cash in.
   (c) CONCRETE CLAIM -- an exact number or measurement, or a contrarian/
       surprising claim resolved in the same line via contrast (a
-      "but"/"not"/"unlike"/"instead" turn). Example: "Your coffee is cold in
-      12 minutes. Mine isn't." -- a number, then a contrast that resolves it.
-  HARD RULE: NEVER open on the product's OWN imperfection or a
-  competitor-flaw comparison ("Other bags hide this scuff, not ours.") --
-  imperfection-category truths are late-middle material only, framed as
+      "but"/"not"/"unlike"/"instead" turn). Example: "It broke after a week.
+      This one didn't." -- a specific fact, then a contrast that resolves it.
+  HARD RULE: NEVER open on the product's OWN flaw/wear or a
+  competitor-flaw comparison ("Other brands hide this dent, not ours.") --
+  material_character-category truths are late-middle material only, framed as
   earned character, never as the hook. At most ONE of the 4 variants may use
   a pain-point opening (PAS-style), and even then the pain must be the
-  VIEWER's own situation ("you're always digging for your keys at the
-  door"), never the product's own flaw.
+  VIEWER's own situation ("you're always checking if it's still warm"),
+  never the product's own flaw.
 - A hook line of {MAX_HOOK_WORDS} words or fewer.
 - Exactly one CTA verb -- never two competing calls to action.
 - Beat-level timestamps: break the script into small beats (NOT 3 coarse
@@ -300,18 +436,24 @@ Per-variant requirements:
   sum to exactly {target_length_sec} seconds. Each beat's "line" is the actual
   script text spoken/shown during that beat.
 
-STORY STRUCTURE (beat-order rule, applies to every variant): open on the
-person (beat 1: the human-moment or curiosity-gap opening from HOOK STRENGTH
-above -- no feature, no flaw, no spec) -> arrive at the product (beats 2-3:
-the product enters by name or a clear reference, its features framed as the
-PAYOFF of the opening moment, never as an inventory list) -> close on exactly
-one CTA verb (the rule above -- unchanged), EARNED not tacked on (see CTA
-BRIDGE below).
+STORY STRUCTURE (beat-order rule, applies to every variant):
+Beat 1 -- the HOOK: ground the viewer in the product immediately. Three equally valid approaches:
+  (a) SECOND-PERSON INVITATION: drop the viewer into using the product ("Grab it. It's ready.")
+  (b) CURIOSITY GAP grounded in a real detail, resolved later ("Press it down. Hard as you can. It pops right back.")
+  (c) CONCRETE PRODUCT CLAIM: a specific fact stated in plain words ("It works. Every time.")
+      PLAIN-LANGUAGE WARNING for path (c): "concrete" means the OUTCOME the person EXPERIENCES,
+      stated plainly — not the engineering or manufacturing detail behind it. "It lasts all day."
+      is concrete. Any technical specification (material grades, construction processes, coatings,
+      compound names) is jargon. Path (c) is the most jargon-prone path — discipline is required
+      to keep it plain.
 
-POSITIVE-ONLY GROUNDING (mandatory, reverses the earlier "imperfection as
-earned character" framing): never cite an imperfection-category truth (a
-scratch, scuff, wear mark) in ANY variant -- flaws are off by default. Ground
-every variant in color, style/silhouette, size, and positive
+Beats 2-3 -- the PRODUCT PAYOFF: name 2-3 specific features that make this product distinct. Product is the subject.
+
+Final beat -- EARNED CTA: tie the ask to the specific thing just established (per CTA BRIDGE rule below).
+
+POSITIVE-ONLY GROUNDING (mandatory): never cite a material_character-category
+truth (a scratch, scuff, wear mark) in ANY variant -- flaws are off by default.
+Ground every variant in color, style/silhouette, size, and positive
 material/construction facts instead; these are what make the product
 desirable and specific, not a defect inventory. Do not treat a debossed
 logo/brand mark as the star of the script either -- it is a minor supporting
@@ -323,40 +465,29 @@ disconnected command. The beat immediately before the CTA must set up the ask
 CTA line itself should pick up that thread (a connective like "so"/"that's
 why"/"now", or a direct reference back to what was just said) rather than
 jump-cutting straight into a bare imperative with no bridge.
-  WEAK (abrupt, do NOT do this): "...It's already getting darker right where
-  her hands grab it. Grab yours before the next batch sells out." -- the CTA
-  shares no thread with the line before it; it just starts a new, unrelated
-  imperative.
-  STRONG (same idea, bridged): "...It's already getting darker right where
-  her hands grab it -- that's the mark of a bag that's actually yours. Go
-  make it yours too." -- the CTA explicitly picks up "that's the mark of..."
-  before asking.
+  WEAK (abrupt, do NOT do this): "...It still looks new a year later.
+  Order now." -- the CTA shares no thread with the line before it; it just
+  starts a new, unrelated imperative.
+  STRONG (same idea, bridged): "...It still looks new a year later --
+  that's what you're actually paying for. So get yours." -- the CTA
+  explicitly picks up the benefit just proven before asking.
 
-{human_centric_block}
-STORY / REAL-WORLD USE (a narrative/visual choice, distinct from the grounding
-rule above -- this framing choice needs no truth_id of its own, the same way a
-camera angle or pacing decision doesn't need one either):
-- At least 2 of the 4 variants must include at least one beat depicting the
-  product in genuine real-world use -- someone wearing/carrying/reaching for/
-  using it in a specific daily moment (e.g. "she slings it over one shoulder
-  on her way out the door," not "the product sits on a table"). A script that
-  never leaves material/construction description reads as a demo reel, not an
-  ad that sells an experience -- the moment of someone's life with the product
-  is usually the actual sales pitch, not another angle on its surfaces.
-- This is a STORY choice, not a factual claim: describing that a moment of use
-  happens needs no truth_id. But any physical product detail you mention
-  WITHIN that moment (its color, a named part, a texture) still must trace
-  back to a real truth_id per the grounding rule above -- invent the moment,
-  never invent the product.
-- PRONOUN THREAD (one implied person per variant, never a second one): if a
-  variant commits to an implied person at all, establish them ONCE -- a
-  pronoun plus a minimal moment marker (a time, a state, a place: "on her way
-  out the door," "mid-run," "at the door") -- the first time they appear, then
-  refer to them with that SAME pronoun in every later beat that mentions them.
-  Never reintroduce them a second time as "a person"/"someone"/"a man"/
-  "a woman"/"a hand" later in the same variant -- that reads as a second,
-  different person, not a continuing story. One implied person per variant,
-  one pronoun thread, start to finish.
+EARNED CLOSE — the CTA beat must earn its ask. It must reference something specific from
+earlier in the script: the feeling, material quality, or moment just established. A CTA
+that could be appended to ANY ad ("So grab yours." / "Order now." / "Buy today.") fails
+this rule. The closing line should feel like it grows out of what came before — not like
+a generic command bolted on.
+
+WRONG: [script building toward a specific product benefit] → "So grab yours."
+RIGHT: [same script] → "That's the thing you'll notice a year from now — get yours."
+The RIGHT version ties back to whatever specific benefit was just established in the script.
+
+{vo_focus_block}
+VIEWER IMAGINATION (a narrative choice, not a factual claim):
+At least 2 of the 4 variants should make the viewer IMAGINE owning or using the product --
+through second-person address ("you'll feel", "grab it", "your hands"), sensory consequence language
+("you notice the difference after the first use"), or a benefit claim about what owning it changes.
+This replaces any third-person pronoun story: the viewer is the protagonist, not "she" or "he."
 
 If seller_direction includes "never_do" constraints, do not violate them in
 any variant. If mood words are present, let them bias framework/tone choice.
@@ -486,7 +617,7 @@ def _flaw_led_hook_problem(
             "concrete claim about what the product DOES instead"
         )
     for truth_id, fact in cited_truths:
-        if truth_categories.get(truth_id) != "imperfection":
+        if truth_categories.get(truth_id) != IMPERFECTION_CATEGORY:
             continue
         if _lifted_run(hook, fact, min_run=HOOK_FLAW_LIFT_MIN_RUN):
             return (
@@ -632,6 +763,35 @@ def _first_pronoun_beat_index(beats: list[dict]) -> Optional[int]:
     return None
 
 
+# VO FOCUS MANDATE deterministic backstop (2026-07-12): the VO must describe
+# the PRODUCT to the viewer -- never narrate a third-person person's action.
+# Same "cheap proxy, not a real grammar parser" posture as the lift/rhyme
+# checks: match a beat line that starts with a third-person personal pronoun
+# followed by a verb-like token. False negatives (a person-narrating sentence
+# buried mid-line) are the safe direction; a false positive would wrongly
+# bounce a legitimately product-focused line into the re-prompt loop.
+_PERSON_SUBJECT_ACTION_RE = re.compile(
+    r"^\s*(she|he|they)\s+\w+",
+    re.IGNORECASE,
+)
+
+
+def _person_narration_problems(beats: list[dict]) -> list[str]:
+    """Flag VO lines where a third-person person is the subject of an action.
+    The VO must be product-focused; humans appear in the VIDEO only."""
+    problems = []
+    for i, beat in enumerate(beats):
+        line = beat.get("line", "")
+        if _PERSON_SUBJECT_ACTION_RE.match(line):
+            problems.append(
+                f"beat {i} line '{line}' narrates a person's action in VO -- "
+                "the VO must describe the PRODUCT or address the viewer (you/your); "
+                "the human appears in the VIDEO, not in the narration. "
+                "Rewrite with the product or viewer as subject."
+            )
+    return problems
+
+
 def _reintroduction_problems(beats: list[dict]) -> list[str]:
     """Flag any beat AFTER the first pronoun-establishing beat that reverts to
     a generic indefinite reference ("a person"/"someone"/"a man"/"a woman"/
@@ -752,6 +912,29 @@ def _rhyme_key(word: str) -> Optional[str]:
         return _normalize_rhyme_phones(pronouncing.rhyming_part(phones[0]))
     match = _VOWEL_CODA_RE.search(word)
     return match.group(1) if match else None
+
+
+def _missing_required_tiers(variant: dict, truths_by_id: dict) -> list[str]:
+    cited_ids = set(variant.get("grounding_truth_ids", []))
+    cited_cats = {truths_by_id[tid]["category"] for tid in cited_ids if tid in truths_by_id}
+    problems = []
+    if not cited_cats & _TIER1_CATEGORIES:
+        problems.append(
+            "Missing TIER 1 (form_factor): script never establishes what the product IS "
+            "physically — add a truth that anchors its shape, size, and overall form."
+        )
+    if not cited_cats & _TIER2_CATEGORIES:
+        problems.append(
+            "Missing TIER 2 (color/material/texture): script never grounds why the product "
+            "feels premium — add a truth about its material or surface quality."
+        )
+    if not cited_cats & _TIER3_CATEGORIES:
+        problems.append(
+            "Missing TIER 3 (construction_detail/material_character): script has no "
+            "idiosyncratic differentiator — add a truth about what makes THIS specific product "
+            "distinct from any other in its category."
+        )
+    return problems
 
 
 def _rhyme_problems(beats: list[dict]) -> list[str]:
@@ -959,7 +1142,10 @@ def _validate_variant(
                 problems.extend(_voice_problems_for_line(line, cited_truths))
 
         problems.extend(_reintroduction_problems(beats))
+        problems.extend(_person_narration_problems(beats))
         problems.extend(_rhyme_problems(beats))
+        truths_by_id = {tid: {"category": cat} for tid, cat in truth_categories.items()}
+        problems.extend(_missing_required_tiers(variant, truths_by_id))
         if truth_facts:
             problems.extend(_single_truth_fixation_problems(beats, truth_facts))
 
@@ -1038,7 +1224,6 @@ def _human_presence_count(variants: list) -> int:
 def _reprompt_message(
     invalid: list[tuple[dict, list[str]]],
     valid_count: int,
-    human_shortfall: bool = False,
 ) -> str:
     parts: list[str] = []
     if invalid:
@@ -1055,16 +1240,6 @@ def _reprompt_message(
             f"You returned only {valid_count} script variant(s), but exactly "
             f"{REQUIRED_VARIANT_COUNT} are required, still distinct in "
             "framework/hook_type/emotional_trigger."
-        )
-    if human_shortfall:
-        parts.append(
-            f"Fewer than {MIN_HUMAN_PRESENCE_VARIANTS} of your variants commit to "
-            "an implied person, but this product's own facts name real "
-            "human-contact parts (see the HUMAN-CENTRIC BIAS rule): rewrite enough "
-            f"variants so at least {MIN_HUMAN_PRESENCE_VARIANTS} of the 4 open on "
-            "or carry a real moment of someone wearing/carrying/using the product "
-            "(one pronoun thread per variant, per the PRONOUN THREAD rule), while "
-            "keeping every other rule intact."
         )
     parts.append(
         "Fix ONLY these specific issues and return the full corrected JSON "
@@ -1119,7 +1294,7 @@ async def generate_script_variants(
             {"role": "user", "content": _build_user_content(brief, product_truths, seller_direction)},
         ]
 
-        response_text = await create_completion(client, model=model, messages=messages)
+        response_text = await create_completion(client, model=model, messages=messages, enable_thinking=True)
         parsed = _parse_json_response(response_text)
         raw_variants = parsed.get("script_variants", [])
         valid, invalid = _split_valid_invalid(
@@ -1128,44 +1303,24 @@ async def generate_script_variants(
 
         # Per spec: fewer than 4 variants is its own re-prompt trigger, even
         # when nothing else was individually wrong (the model just under-delivered).
-        # Human-Centric Bias fix: for a product whose facts establish a human-use
-        # affordance, too few person-committed variants is ALSO a re-prompt
-        # trigger (deterministic floor behind the HUMAN-CENTRIC BIAS prompt rule).
-        human_shortfall = (
-            human_bias and _human_presence_count(valid) < MIN_HUMAN_PRESENCE_VARIANTS
-        )
-        needs_reprompt = len(valid) < REQUIRED_VARIANT_COUNT or human_shortfall
-        if needs_reprompt:
+        if len(valid) < REQUIRED_VARIANT_COUNT:
             logger.info(
-                "Concept Agent: %d/%d variants valid (human-presence shortfall: %s), "
-                "re-prompting once (%d problems)",
-                len(valid), REQUIRED_VARIANT_COUNT, human_shortfall, len(invalid),
+                "Concept Agent: %d/%d variants valid, re-prompting once (%d problems)",
+                len(valid), REQUIRED_VARIANT_COUNT, len(invalid),
             )
             messages.append({"role": "assistant", "content": response_text})
             messages.append({
                 "role": "user",
-                "content": _reprompt_message(invalid, len(valid), human_shortfall=human_shortfall),
+                "content": _reprompt_message(invalid, len(valid)),
             })
-            retry_text = await create_completion(client, model=model, messages=messages)
+            retry_text = await create_completion(client, model=model, messages=messages, enable_thinking=True)
             retry_parsed = _parse_json_response(retry_text)
             retry_valid, _ = _split_valid_invalid(
                 retry_parsed.get("script_variants", []),
                 truth_categories, target_length_sec, truth_facts, wants_imperfection,
             )
-            retry_better = len(retry_valid) > len(valid) or (
-                human_shortfall
-                and len(retry_valid) >= len(valid)
-                and _human_presence_count(retry_valid) > _human_presence_count(valid)
-            )
-            if retry_better:
+            if len(retry_valid) > len(valid):
                 valid = retry_valid
-            if human_shortfall and _human_presence_count(valid) < MIN_HUMAN_PRESENCE_VARIANTS:
-                logger.warning(
-                    "Concept Agent: still only %d/%d person-committed variant(s) after "
-                    "re-prompt for a human-suited product -- proceeding degraded, the "
-                    "Hook-Checker's human-moment tiebreak is the remaining lever.",
-                    _human_presence_count(valid), MIN_HUMAN_PRESENCE_VARIANTS,
-                )
 
         if len(valid) < MIN_VARIANTS_AFTER_DEGRADE:
             logger.warning(

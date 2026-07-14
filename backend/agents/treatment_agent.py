@@ -70,7 +70,7 @@ from openai import AsyncOpenAI
 
 from agents._retry import create_completion
 from agents.justification_validator import BANNED_WORD, BEAT_FUNCTIONS, validate_justifications
-from graph.state import BeatTreatment, ProductTruth, ScriptBeat, Treatment, WinningScript
+from graph.state import BeatTreatment, ProductTruth, ScriptBeat, Treatment, VisualDirection, WinningScript
 
 logger = logging.getLogger("productcut.agents.treatment_agent")
 
@@ -94,6 +94,23 @@ _VIOLATION_MESSAGES = {
     "invalid_beat_function": f"beat_function is not one of {BEAT_FUNCTIONS}",
     "stoplist_hit": f"why_not_generic/visual_approach uses the banned word '{BANNED_WORD}' or a generic stock phrase",
 }
+
+
+def _format_visual_direction(vd: VisualDirection) -> str:
+    lines = [
+        f"Story context: {vd['story_context']}",
+        "",
+        "Per-beat visual decisions (FIXED — realize these, do not re-decide):",
+    ]
+    for bvd in vd["beat_visual_directions"]:
+        hp = bvd["human_presence"]
+        action = f"; action: {bvd['human_action']}" if hp == "yes" and bvd.get("human_action") else ""
+        lines.append(
+            f"  beat {bvd['beat_index']}: [{bvd['focus_feature_truth_id']}] "
+            f"{bvd['focus_moment']} | {bvd['suggested_shot_type']} / "
+            f"{bvd['suggested_camera_move']} | human={hp}{action}"
+        )
+    return "\n".join(lines)
 
 
 def _format_truths(truths: list[ProductTruth]) -> str:
@@ -150,7 +167,8 @@ def _hook_beat_implies_person(winning_script: WinningScript) -> bool:
 
 
 def _build_system_prompt(
-    beat_count: int, implies_person: bool = False, hook_implies_person: bool = False
+    beat_count: int, implies_person: bool = False, hook_implies_person: bool = False,
+    has_visual_direction: bool = False,
 ) -> str:
     last = beat_count - 1
     character_anchor_field = (
@@ -187,6 +205,16 @@ product macro-detail close-up. Save the macro/construction close-up for a
 later demo/proof beat instead."""
         if hook_implies_person else ""
     )
+    visual_approach_desc = (
+        "the DIRECTOR'S ATMOSPHERIC VOICE for this beat — how it should feel to watch: "
+        "the quality of light, the emotional register, the pacing within the shot. "
+        "The shot's subject and camera move are already fixed by the Visual Direction "
+        "above; your visual_approach adds the tonal layer on top, not a re-decision "
+        "of what to show."
+        if has_visual_direction else
+        'the specific camera/framing/lighting approach for this beat '
+        '(e.g. "static macro push on the seam, no camera movement")'
+    )
     return f"""You are a director's assistant creating a visual treatment for a short-form
 product ad (15-30s), grounded in the winning script and specific product
 facts -- never in generic category knowledge.
@@ -219,8 +247,7 @@ Produce a director's treatment with:
      exactly, word for word -- this will be validated)
    - truth_fact_id: the specific product_truths[] truth_id this beat's
      visual choice is grounded in
-   - visual_approach: the specific camera/framing/lighting approach for this
-     beat (e.g. "static macro push on the seam, no camera movement")
+   - visual_approach: {visual_approach_desc}
    - why_not_generic: 1-2 sentences explaining why this visual choice is
      specific to THIS product, not a generic stock-footage choice any
      similar product could use
@@ -266,19 +293,25 @@ Return ONLY valid JSON in this exact shape, no preamble or commentary:
 }}"""
 
 
-def _build_user_content(winning_script: WinningScript, product_truths: list[ProductTruth]) -> str:
-    return "\n".join(
-        [
-            "Winning script (full text):",
-            winning_script["text"],
-            "",
-            "Winning script beats (numbered, in order):",
-            _format_beats(winning_script["beats"]),
-            "",
-            "Product truths:",
-            _format_truths(product_truths),
-        ]
-    )
+def _build_user_content(
+    winning_script: WinningScript,
+    product_truths: list[ProductTruth],
+    visual_direction: Optional[VisualDirection] = None,
+) -> str:
+    parts = [
+        "Winning script (full text):",
+        winning_script["text"],
+        "",
+        "Winning script beats (numbered, in order):",
+        _format_beats(winning_script["beats"]),
+        "",
+        "Product truths:",
+        _format_truths(product_truths),
+    ]
+    if visual_direction:
+        parts.append("")
+        parts.append(_format_visual_direction(visual_direction))
+    return "\n".join(parts)
 
 
 def _parse_json_response(raw: str) -> dict:
@@ -370,6 +403,7 @@ def _reprompt_message(problems_by_index: dict[int, str]) -> str:
 async def generate_treatment(
     winning_script: WinningScript,
     product_truths: list[ProductTruth],
+    visual_direction: Optional[VisualDirection] = None,
     client: Optional[AsyncOpenAI] = None,
 ) -> Treatment:
     """Run the Treatment Agent: one Qwen-Plus call, one bounded re-prompt naming
@@ -392,19 +426,30 @@ async def generate_treatment(
     beat_count = len(beats)
     truth_id_list = [t["truth_id"] for t in product_truths]
     all_indices = list(range(beat_count))
-    implies_person = _script_implies_person(winning_script)
-    hook_implies_person = _hook_beat_implies_person(winning_script)
+
+    # When VDA output is available, derive implies_person/hook_implies_person
+    # from its authoritative human_presence decisions rather than the text scan.
+    if visual_direction:
+        bvds = visual_direction.get("beat_visual_directions", [])
+        implies_person = any(b["human_presence"] == "yes" for b in bvds)
+        hook_implies_person = bool(bvds) and bvds[0]["human_presence"] == "yes"
+    else:
+        implies_person = _script_implies_person(winning_script)
+        hook_implies_person = _hook_beat_implies_person(winning_script)
 
     try:
         messages = [
             {
                 "role": "system",
-                "content": _build_system_prompt(beat_count, implies_person, hook_implies_person),
+                "content": _build_system_prompt(
+                    beat_count, implies_person, hook_implies_person,
+                    has_visual_direction=visual_direction is not None,
+                ),
             },
-            {"role": "user", "content": _build_user_content(winning_script, product_truths)},
+            {"role": "user", "content": _build_user_content(winning_script, product_truths, visual_direction)},
         ]
 
-        response_text = await create_completion(client, model=model, messages=messages)
+        response_text = await create_completion(client, model=model, messages=messages, enable_thinking=True)
         parsed = _parse_json_response(response_text)
 
         director_persona = parsed.get("director_persona") or ""
@@ -438,7 +483,7 @@ async def generate_treatment(
             )
             messages.append({"role": "assistant", "content": response_text})
             messages.append({"role": "user", "content": _reprompt_message(problems_by_index)})
-            retry_text = await create_completion(client, model=model, messages=messages)
+            retry_text = await create_completion(client, model=model, messages=messages, enable_thinking=True)
             retry_parsed = _parse_json_response(retry_text)
             retry_by_index = _extract_by_index(retry_parsed)
 
@@ -500,6 +545,7 @@ async def treatment_agent_node(state: dict) -> dict:
     treatment = await generate_treatment(
         winning_script=state["winning_script"],
         product_truths=state.get("product_truths", []),
+        visual_direction=state.get("visual_direction"),
     )
     fallback_count = sum(
         1 for bt in treatment["beat_treatments"] if bt["why_not_generic"] == _FALLBACK_WHY_NOT_GENERIC

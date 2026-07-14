@@ -815,9 +815,9 @@ def test_assemble_shots_first_human_shot_becomes_hero_with_extended_duration():
     ordinary-tier duration -- the hero always gets real room for its arc.
 
     `_assemble_shots` is called with no explicit `target_duration_sec`, so it
-    uses DEFAULT_TARGET_LENGTH_SEC (15s) -- the Backstory-First fix scales the
+    uses DEFAULT_TARGET_LENGTH_SEC (18s) -- the Backstory-First fix scales the
     hero window down from the flat [HERO_SHOT_MIN_DURATION_SEC,
-    HERO_SHOT_MAX_DURATION_SEC]=[10, 15]s range for a 15s-target ad (see
+    HERO_SHOT_MAX_DURATION_SEC]=[10, 15]s range for an 18s-target ad (see
     `_scaled_hero_window`), so this asserts against the SCALED window, not
     the flat constants directly."""
     hero_min, hero_max = _scaled_hero_window(DEFAULT_TARGET_LENGTH_SEC)

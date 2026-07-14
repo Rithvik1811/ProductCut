@@ -27,6 +27,7 @@ import pytest
 from agents.assembly_agent import (
     AUDIO_FADE_SEC,
     STRETCH_MAX_RATIO,
+    TAIL_SILENCE_SEC,
     VIDEO_FADE_SEC,
     AssemblyError,
     AssemblyResult,
@@ -280,8 +281,8 @@ def test_effective_zone_falls_back_to_lower_third_for_none_and_missing_shot():
 def test_caption_position_expr_for_each_zone():
     assert _caption_position_expr("left_third") == ("w*0.06", "(h-text_h)/2")
     assert _caption_position_expr("right_third") == ("w*0.94-text_w", "(h-text_h)/2")
-    assert _caption_position_expr("lower_third") == ("(w-text_w)/2", "h*0.80-text_h")
-    assert _caption_position_expr("none") == ("(w-text_w)/2", "h*0.80-text_h")  # falls back
+    assert _caption_position_expr("lower_third") == ("(w-text_w)/2", "h*0.88-text_h")
+    assert _caption_position_expr("none") == ("(w-text_w)/2", "h*0.88-text_h")  # falls back
 
 
 def test_wrap_caption_text_wraps_long_lines():
@@ -289,7 +290,7 @@ def test_wrap_caption_text_wraps_long_lines():
     wrapped = _wrap_caption_text(text, "lower_third")
     assert "\n" in wrapped
     for line in wrapped.split("\n"):
-        assert len(line) <= 22 + 10  # textwrap.fill breaks on words, allow slack for one long word
+        assert len(line) <= 42 + 10  # max chars per line is now 42 (Netflix standard); allow slack for one long word
 
 
 def test_wrap_caption_text_never_empty_for_blank_line():
@@ -327,12 +328,13 @@ def fake_renders(monkeypatch, tmp_path):
         )
         with open(out_path, "wb") as fh:
             fh.write(b"fake-segment")
-        # "keep" mode (is_last_segment + actual >= target) uses actual_duration
-        # as its effective length -- mirror the real function's return value so
-        # callers summing this into total_planned_duration see the same shape.
+        # Mirror the real function's return value: "keep" mode (is_last_segment
+        # + actual >= target) uses actual_duration as effective length, and the
+        # last segment always gets TAIL_SILENCE_SEC of freeze-frame tail added.
+        tail = TAIL_SILENCE_SEC if is_last_segment else 0.0
         if is_last_segment and actual_duration >= target:
-            return pad_before + actual_duration + pad_after
-        return pad_before + target + pad_after
+            return pad_before + actual_duration + pad_after + tail
+        return pad_before + target + pad_after + tail
 
     def _fake_placeholder(canvas_w, canvas_h, duration, fps=30):
         calls["placeholder"].append(dict(canvas_w=canvas_w, canvas_h=canvas_h, duration=duration))
@@ -445,8 +447,9 @@ async def test_impl_marks_only_the_last_segment_and_passes_total_duration_hint(f
     stage1_calls = fake_renders["stage1"]
     assert [c["is_last_segment"] for c in stage1_calls] == [False, False, True]
     # _fake_probe_fn returns duration=3.0 == target=3.0 for every beat -> the
-    # last segment's "keep" branch (actual >= target) still sums to 3.0.
-    assert fake_renders["stage2"][0]["total_duration_hint"] == pytest.approx(9.0)
+    # last segment's "keep" branch sums to 3.0 + TAIL_SILENCE_SEC; first two
+    # segments contribute 3.0 each, so total = 3 + 3 + (3 + TAIL_SILENCE_SEC).
+    assert fake_renders["stage2"][0]["total_duration_hint"] == pytest.approx(9.0 + TAIL_SILENCE_SEC)
 
 
 @pytest.mark.asyncio
@@ -760,9 +763,9 @@ async def test_real_two_stage_pipeline_mixed_resolution_orientation_and_duration
     assert result.degraded_beats == []
 
     probe = _ffprobe(captured["path"])
-    # Total duration matches the sum of the caption windows (10s), within a
-    # couple frames of tolerance for encoder rounding.
-    assert abs(float(probe["format"]["duration"]) - 10.0) < 0.3
+    # Total duration = caption windows (10s) + TAIL_SILENCE_SEC freeze hold,
+    # within a couple frames of tolerance for encoder rounding.
+    assert abs(float(probe["format"]["duration"]) - (10.0 + TAIL_SILENCE_SEC)) < 0.3
     assert result.total_duration_sec == pytest.approx(float(probe["format"]["duration"]), abs=0.05)
 
     video_stream = next(s for s in probe["streams"] if s["codec_type"] == "video")
@@ -825,7 +828,8 @@ async def test_real_pipeline_holds_frame_across_orphaned_beat(tmp_path):
     assert result.degraded_beats == []  # no fetch failure; Budget Gate simply never had a shot for beat 2
 
     probe = _ffprobe(captured["path"])
-    assert abs(float(probe["format"]["duration"]) - 9.0) < 0.3  # full VO window still covered
+    # full VO window (9s) + TAIL_SILENCE_SEC freeze hold on last segment.
+    assert abs(float(probe["format"]["duration"]) - (9.0 + TAIL_SILENCE_SEC)) < 0.3
 
     # The held frame is genuinely s2's own content extended, not a black gap:
     # sample well inside the orphaned beat's window (t=7.5s) and confirm it is
@@ -912,9 +916,9 @@ async def test_real_last_segment_overrun_is_never_trimmed_and_gets_a_fade(tmp_pa
     assert result.shot_count == 2
 
     probe = _ffprobe(captured["path"])
-    # 3.0 (s1) + 5.0 (s2's FULL natural length, not trimmed to its 3.0s
-    # target) = 8.0s total -- proves the tail was never hard-trimmed.
-    assert abs(float(probe["format"]["duration"]) - 8.0) < 0.3
+    # 3.0 (s1) + 5.0 (s2's FULL natural length) + TAIL_SILENCE_SEC freeze hold
+    # = 9.0s total -- proves the tail was never hard-trimmed.
+    assert abs(float(probe["format"]["duration"]) - (8.0 + TAIL_SILENCE_SEC)) < 0.3
     audio_stream = next((s for s in probe["streams"] if s["codec_type"] == "audio"), None)
     assert audio_stream is not None  # VO audio still present (auto-extended by apad+shortest)
 
@@ -923,11 +927,12 @@ async def test_real_last_segment_overrun_is_never_trimmed_and_gets_a_fade(tmp_pa
     r, g, b = _avg_pixel_rgb(captured["path"], 6.5)
     assert b > r and b > 100, f"expected s2's own blue content at t=6.5s, got RGB=({r},{g},{b})"
 
-    # The very end fades to black (VIDEO_FADE_SEC=0.5s fade-out) -- sample
-    # right at the tail and confirm the frame has visibly dimmed relative to
-    # the mid-clip blue sampled above.
-    r_end, g_end, b_end = _avg_pixel_rgb(captured["path"], 7.9)
-    assert b_end < b, f"expected the final frame to have faded toward black (mid={b}, end={b_end})"
+    # The very end fades to black (VIDEO_FADE_SEC=0.5s fade-out). With the
+    # tail, total=9.0s and the fade runs [8.5, 9.0)s -- sample inside the fade
+    # window and confirm the frame has visibly dimmed toward black.
+    fade_sample_t = 8.0 + TAIL_SILENCE_SEC - 0.2  # 0.3s into the 0.5s fade
+    _, _, b_end = _avg_pixel_rgb(captured["path"], fade_sample_t)
+    assert b_end < b, f"expected the fade-window frame to have dimmed toward black (mid={b}, faded={b_end})"
 
 
 @_skip_no_ffmpeg

@@ -6,11 +6,63 @@ boundaries so no real DashScope/Wan/ffmpeg/OSS calls are made.
 """
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from typing import Callable
 
 from agents.video_gen_node import VideoGenAPIError
+
+# Canned Visual Direction Agent response for the shared 3-beat winning script
+# (beats: hook/demo/cta). t7 is the form_factor truth (compact aluminum housing).
+_VDA_PAYLOAD = json.dumps({
+    "story_context": (
+        "The compact aluminum housing sits alone on a clean surface. "
+        "A slow push reveals the diagonal scratch before we return to the "
+        "full form for the closing ask."
+    ),
+    "beat_visual_directions": [
+        {
+            "beat_index": 0,
+            "focus_feature_truth_id": "t7",
+            "focus_moment": "compact charcoal block emerging from dark background",
+            "human_presence": "no",
+            "suggested_shot_type": "hook_hero",
+            "suggested_camera_move": "push_in",
+            "framing_notes": "product fills frame, matte finish catching warm key",
+        },
+        {
+            "beat_index": 1,
+            "focus_feature_truth_id": "t1",
+            "focus_moment": "hairline diagonal scratch catching warm sidelight",
+            "human_presence": "no",
+            "suggested_shot_type": "macro_detail",
+            "suggested_camera_move": "static",
+            "framing_notes": "extreme macro, scratch bisects frame diagonally",
+        },
+        {
+            "beat_index": 2,
+            "focus_feature_truth_id": "t7",
+            "focus_moment": "full form resolves to endcard, proportions preserved",
+            "human_presence": "no",
+            "suggested_shot_type": "cta_endcard",
+            "suggested_camera_move": "static",
+            "framing_notes": "lower third reserved for CTA overlay",
+        },
+    ],
+})
+
+
+def patch_visual_direction_boundaries(monkeypatch) -> None:
+    """Fake the Visual Direction Agent's AsyncOpenAI boundary (sits between
+    merge_validator and treatment_agent in the graph). Every graph test that
+    runs past merge_validator's "finalize"/"fallback" routes needs this, or
+    the real agent hits the DashScope endpoint."""
+    from tests._fakes import make_fake_async_openai
+    monkeypatch.setattr(
+        "agents.visual_direction_agent.AsyncOpenAI",
+        make_fake_async_openai([_VDA_PAYLOAD]),
+    )
 
 
 def make_fake_wan_generate(*, fail_if_prompt_contains: str | None = None) -> Callable:

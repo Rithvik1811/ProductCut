@@ -21,16 +21,18 @@ from tests._phase3_graph import (
     patch_assembly_boundaries,
     patch_continuity_boundaries,
     patch_phase3_boundaries,
+    patch_visual_direction_boundaries,
     patch_voiceover_boundaries,
 )
 
 GOOD_FACTS = [
-    ("a hairline scratch runs diagonally across the lower left corner of the lid", "imperfection"),
+    ("a hairline scratch runs diagonally across the lower left corner of the lid", "material_character"),
     ("the base plate has two asymmetric ventilation slots near the rear edge", "construction_detail"),
-    ("a faint discoloration ring marks where a sticker was once removed", "imperfection"),
+    ("a faint discoloration ring marks where a sticker was once removed", "material_character"),
     ("the power button has a slightly recessed matte texture unlike the glossy housing", "texture"),
-    ("the charging port surround shows minor oxidation on the metal contacts", "imperfection"),
+    ("the charging port surround shows minor oxidation on the metal contacts", "material_character"),
     ("a small manufacturer stamp is debossed near the bottom-right hinge", "construction_detail"),
+    ("compact aluminum housing, 130mm wide × 80mm tall, matte charcoal finish", "form_factor"),
 ]
 
 FOUR_GOOD_VARIANTS = [
@@ -46,10 +48,10 @@ FOUR_GOOD_VARIANTS = [
         # type) is the accurate label, not a re-engineered fixture.
         "hook_type": "contrarian / myth-busting",
         "emotional_trigger": "curiosity",
-        "grounding_truth_ids": ["t1", "t4"],
+        "grounding_truth_ids": ["t1", "t4", "t7"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "Scratched already? Not this one."},
                   {"t_start": 3, "t_end": 12, "line": "This one shrugs it off."},
-                  {"t_start": 12, "t_end": 15, "line": "So tap to shop."}],
+                  {"t_start": 12, "t_end": 18, "line": "So tap to shop."}],
     },
     {
         "variant_id": "v2",
@@ -61,10 +63,10 @@ FOUR_GOOD_VARIANTS = [
         # truths must now span >= 2 distinct categories, so v2/v3/v4 each pair
         # an imperfection/construction truth with the texture truth (t4) instead
         # of two same-category truths.
-        "grounding_truth_ids": ["t3", "t4"],
+        "grounding_truth_ids": ["t3", "t4", "t7"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "Stickers leave rings, not this base."},
                   {"t_start": 3, "t_end": 12, "line": "Ours won't."},
-                  {"t_start": 12, "t_end": 15, "line": "So tap to shop."}],
+                  {"t_start": 12, "t_end": 18, "line": "So tap to shop."}],
     },
     {
         "variant_id": "v3",
@@ -72,10 +74,10 @@ FOUR_GOOD_VARIANTS = [
         "framework": "AIDA",
         "hook_type": "social proof",
         "emotional_trigger": "recognition",
-        "grounding_truth_ids": ["t6", "t4"],
+        "grounding_truth_ids": ["t6", "t4", "t7"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "Every detail debossed, not printed."},
                   {"t_start": 3, "t_end": 12, "line": "Built to last."},
-                  {"t_start": 12, "t_end": 15, "line": "So tap to shop."}],
+                  {"t_start": 12, "t_end": 18, "line": "So tap to shop."}],
     },
     {
         "variant_id": "v4",
@@ -83,10 +85,10 @@ FOUR_GOOD_VARIANTS = [
         "framework": "BAB",
         "hook_type": "before/after",
         "emotional_trigger": "relief",
-        "grounding_truth_ids": ["t1", "t2"],
+        "grounding_truth_ids": ["t1", "t2", "t4", "t7"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "From scratch, not spotless -- until now."},
                   {"t_start": 3, "t_end": 12, "line": "Built for real life."},
-                  {"t_start": 12, "t_end": 15, "line": "So tap to shop."}],
+                  {"t_start": 12, "t_end": 18, "line": "So tap to shop."}],
     },
 ]
 
@@ -398,6 +400,7 @@ async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatc
         "agents.shot_list_agent.AsyncOpenAI",
         make_fake_async_openai([SHOT_LIST_CALL_A_PAYLOAD, SHOT_LIST_CALL_B_PAYLOAD]),
     )
+    patch_visual_direction_boundaries(monkeypatch)
     patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
     patch_continuity_boundaries(monkeypatch)  # Phase 4: clean drift, loop ends at once
     patch_voiceover_boundaries(monkeypatch)  # Phase 5: parallel branch off merge_validator

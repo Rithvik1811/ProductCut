@@ -383,7 +383,7 @@ def test_prompt_budget_drops_quality_only_when_that_alone_suffices(caplog):
     """Just over budget from a longer-than-usual Mood dump -- dropping Quality
     alone is enough; Mood must survive UNCOMPRESSED and Lighting untouched."""
     shot = _shot("s1")
-    treatment = {**TREATMENT, "director_persona": "quiet mood word " * 69, "pacing_philosophy": "p"}
+    treatment = {**TREATMENT, "director_persona": "quiet mood word " * 119, "pacing_philosophy": "p"}
     with caplog.at_level("WARNING"):
         prompt = _build_prompt(shot, TRUTHS, treatment)
     assert len(prompt) <= PROMPT_CHAR_BUDGET
@@ -400,12 +400,12 @@ def test_prompt_budget_drops_quality_then_compresses_mood(caplog):
     """Further over budget -- Quality alone isn't enough, so Mood is ALSO
     compressed to a short clause. Lighting must still survive untouched."""
     shot = _shot("s1")
-    treatment = {**TREATMENT, "director_persona": "quiet mood word " * 70, "pacing_philosophy": "p"}
+    treatment = {**TREATMENT, "director_persona": "quiet mood word " * 120, "pacing_philosophy": "p"}
     with caplog.at_level("WARNING"):
         prompt = _build_prompt(shot, TRUTHS, treatment)
     assert len(prompt) <= PROMPT_CHAR_BUDGET
     assert "Quality:" not in prompt
-    assert "quiet mood word " * 70 not in prompt  # the full dump is gone
+    assert "quiet mood word " * 120 not in prompt  # the full dump is gone
     assert shot["lighting"] in prompt  # lighting still untouched
     warnings = [r.message for r in caplog.records]
     assert any("Quality, Mood (compressed)" in w for w in warnings)
@@ -421,8 +421,8 @@ def test_prompt_budget_drops_all_three_sections_in_order_when_needed(caplog):
         "fill sources chosen to flatter the material finish. "
     )
     shot = _shot("s1")
-    shot["lighting"] = base_lighting * 10
-    treatment = {**TREATMENT, "director_persona": "quiet mood word " * 70, "pacing_philosophy": "p"}
+    shot["lighting"] = base_lighting * 17
+    treatment = {**TREATMENT, "director_persona": "quiet mood word " * 200, "pacing_philosophy": "p"}
     with caplog.at_level("WARNING"):
         prompt = _build_prompt(shot, TRUTHS, treatment)
     assert len(prompt) <= PROMPT_CHAR_BUDGET
@@ -442,7 +442,7 @@ def test_prompt_action_tail_gets_trimmed_when_it_is_the_overflow_source(caplog):
     full_pipeline_live_vikr_postfix.log, shot s3, a hero shot at 1999 chars
     pre-trim)."""
     shot = _shot("s1")
-    shot["description"] = "A very long action description. " * 60  # pushes well over budget alone
+    shot["description"] = "A very long action description. " * 80  # pushes well over budget alone
     with caplog.at_level("WARNING"):
         prompt = _build_prompt(shot, TRUTHS, TREATMENT)
     assert len(prompt) <= PROMPT_CHAR_BUDGET
@@ -472,7 +472,7 @@ def test_prompt_budget_never_silently_exceeds_when_even_first_sentence_is_huge(c
 
 def test_prompt_budget_drops_are_logged_with_shot_id_and_final_length(caplog):
     shot = _shot("s1")
-    treatment = {**TREATMENT, "director_persona": "quiet mood word " * 69, "pacing_philosophy": "p"}
+    treatment = {**TREATMENT, "director_persona": "quiet mood word " * 119, "pacing_philosophy": "p"}
     with caplog.at_level("WARNING"):
         prompt = _build_prompt(shot, TRUTHS, treatment)
     warnings = [r.message for r in caplog.records]
