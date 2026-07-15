@@ -1,0 +1,174 @@
+/* Scoped design tokens + rules for the studio (wizard + dashboard + library).
+   Named to match the approved Claude Design file 1:1 (--paper, --ink, --accent, ...)
+   but scoped under .pc-studio so they never collide with the app-wide theme
+   tokens in ../globals.css, and mirrors ../components/home/home.css's approach. */
+
+.pc-studio {
+  --paper: #f9f4ea;
+  --paper-deep: #efe0cb;
+  --ink: #12343b;
+  --ink-soft: #4b6264;
+  --faint: #5f716f;
+  --accent: #c89666;
+  --accent-ink: #f9f4ea;
+  --hair: rgba(18, 52, 59, 0.1);
+  --hair-strong: rgba(18, 52, 59, 0.24);
+  --shadow: rgba(18, 52, 59, 0.1);
+  --over: #9c3b2e;
+  --warn: #b06a2c;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --inverse-bg: #12343b;
+  --inverse-fg: #f9f4ea;
+
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.pc-studio[data-theme="dark"] {
+  --paper: #12343b;
+  --paper-deep: #0d262c;
+  --ink: #f3ead9;
+  --ink-soft: #b7c7c6;
+  --faint: #86a2a0;
+  --accent: #e1b382;
+  --accent-ink: #12343b;
+  --hair: rgba(225, 179, 130, 0.14);
+  --hair-strong: rgba(225, 179, 130, 0.3);
+  --shadow: rgba(0, 0, 0, 0.4);
+  --over: #e08a6a;
+  --warn: #e0a24a;
+}
+
+.pc-studio :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.pc-studio .pcs-hover-ink:hover {
+  color: var(--ink) !important;
+}
+.pcs-tab:hover {
+  background: rgba(249, 244, 234, 0.12) !important;
+}
+.pc-studio .pcs-underline-input:focus {
+  border-bottom-color: var(--accent) !important;
+}
+.pc-studio .pcs-final-dl:hover {
+  background: var(--accent) !important;
+  color: var(--accent-ink) !important;
+}
+
+@keyframes pc-studio-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes pc-studio-step-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+}
+@keyframes pc-section-in {
+  from {
+    opacity: 0;
+    transform: translateY(22px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 1279px) and (min-width: 900px) {
+  .pc-studio [data-rid="wizard-main"] {
+    padding: 26px 40px 56px !important;
+  }
+  .pc-studio [data-rid="ghost-num"] {
+    font-size: 200px !important;
+  }
+}
+@media (max-width: 899px) {
+  .pc-studio [data-rid="wizard-toprow"] {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 6px !important;
+  }
+  .pc-studio [data-rid="wizard-main"] {
+    padding: 20px 24px 48px !important;
+  }
+  .pc-studio [data-rid="ghost-num"] {
+    font-size: 120px !important;
+    top: -10px !important;
+  }
+  .pc-studio [data-rid="step4-summary"] {
+    margin: 0 !important;
+    padding: 32px 24px !important;
+  }
+  .pc-studio [data-rid="status-bar"] {
+    padding: 14px 24px !important;
+  }
+  .pc-studio [data-rid="phase-chips"] {
+    justify-content: flex-start !important;
+    overflow-x: auto !important;
+    flex-wrap: nowrap !important;
+    scroll-snap-type: x proximity !important;
+  }
+  .pc-studio [data-rid="phase-chips"] > span {
+    scroll-snap-align: start !important;
+    flex: 0 0 auto !important;
+  }
+  .pc-studio [data-rid="phase-fade"] {
+    display: block !important;
+  }
+  .pc-studio [data-rid="section-pad"] {
+    padding-left: 24px !important;
+    padding-right: 24px !important;
+  }
+  .pc-studio [data-rid="scripts-grid"] {
+    grid-template-columns: 1fr !important;
+    gap: 40px !important;
+  }
+  .pc-studio [data-rid="facet-grid"] {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+  .pc-studio [data-rid="beat-row"] {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 6px !important;
+  }
+  .pc-studio [data-rid="ops-grid"] {
+    grid-template-columns: 1fr !important;
+    gap: 40px !important;
+  }
+  .pc-studio [data-rid="final-grid"] {
+    grid-template-columns: 1fr !important;
+    gap: 32px !important;
+  }
+}
+@media (max-width: 639px) {
+  .pc-studio [data-rid="wizard-toprow"] {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 6px !important;
+  }
+  .pc-studio [data-rid="shots-grid"] {
+    grid-template-columns: 1fr !important;
+  }
+  .pc-studio [data-rid="library-row"] {
+    grid-template-columns: 64px 1fr !important;
+  }
+  .pc-studio [data-rid="library-row"] > span {
+    display: none !important;
+  }
+}

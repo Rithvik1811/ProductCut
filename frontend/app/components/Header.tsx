@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 interface HeaderProps {
   theme: "light" | "dark";
   onToggleTheme: () => void;
@@ -22,7 +24,7 @@ export default function Header({ theme, onToggleTheme }: HeaderProps) {
         background: "var(--bg)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
+      <Link href="/" style={{ display: "flex", alignItems: "center", gap: 13, textDecoration: "none", color: "inherit" }}>
         <div
           style={{
             width: 30,
@@ -48,10 +50,12 @@ export default function Header({ theme, onToggleTheme }: HeaderProps) {
             ad-film studio
           </span>
         </div>
-      </div>
+      </Link>
       <button
         onClick={onToggleTheme}
-        aria-label="Toggle theme"
+        role="switch"
+        aria-checked={isDark}
+        aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
         style={{
           position: "relative",
           width: 62,

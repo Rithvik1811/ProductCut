@@ -1,7 +1,8 @@
 "use client";
 
+import type { KeyboardEvent } from "react";
 import type { MergeValidation, Script } from "@/lib/types";
-import { PanelHead, panelStyle, PanelRow, SCORE_META } from "../shared";
+import { SCORE_META } from "../shared";
 
 interface ScriptsPanelProps {
   scripts: Script[];
@@ -9,7 +10,7 @@ interface ScriptsPanelProps {
   winnerId: string | null;
   merge: MergeValidation | null;
   onSelectScript: (id: string) => void;
-  showConnector: boolean;
+  onTabKeyDown: (e: KeyboardEvent<HTMLButtonElement>, index: number) => void;
 }
 
 export default function ScriptsPanel({
@@ -18,248 +19,129 @@ export default function ScriptsPanel({
   winnerId,
   merge,
   onSelectScript,
-  showConnector,
+  onTabKeyDown,
 }: ScriptsPanelProps) {
   const activeId = activeScriptId || scripts[0]?.id;
   const activeScript = scripts.find((x) => x.id === activeId) || scripts[0] || null;
   const winner = scripts.find((x) => x.id === winnerId);
 
   return (
-    <PanelRow showConnector={showConnector}>
-      <div style={panelStyle}>
-        <PanelHead tag="Scriptwriter + Critic" title="Script variants & scores" />
-
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
-          {scripts.map((sc) => (
-            <button
-              key={sc.id}
-              onClick={() => onSelectScript(sc.id)}
-              style={{
-                fontFamily: "var(--font-sans)",
-                fontSize: 13,
-                fontWeight: 600,
-                padding: "8px 13px",
-                borderRadius: 9,
-                cursor: "pointer",
-                border: `1px solid ${sc.id === activeId ? "var(--tan)" : "var(--line-strong)"}`,
-                background: sc.id === activeId ? "var(--surface2)" : "transparent",
-                color: "var(--ink)",
-              }}
-            >
-              {sc.title} <span style={{ opacity: 0.7 }}>· {sc.total}</span>
-              {sc.winner && (
-                <span
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "8.5px",
-                    letterSpacing: "0.5px",
-                    marginLeft: 6,
-                    padding: "2px 5px",
-                    borderRadius: 4,
-                    background: "var(--tan)",
-                    color: "var(--accent-ink)",
-                  }}
-                >
-                  WIN
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+    <section data-rid="section-pad" style={{ background: "var(--inverse-bg)", color: "var(--inverse-fg)", padding: "80px 48px", animation: "pc-section-in 0.6s var(--ease) both" }}>
+      <div style={{ maxWidth: 1180, margin: "0 auto" }}>
+        <span style={{ fontFamily: "var(--font-sans)", fontSize: "11.5px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: "var(--accent)", display: "block", marginBottom: 28 }}>
+          Scriptwriter + Critic — winning cut
+        </span>
+        <div data-rid="scripts-grid" style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 64, alignItems: "start" }}>
           <div>
-            <div
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "10.5px",
-                letterSpacing: "0.8px",
-                textTransform: "uppercase",
-                color: "var(--muted)",
-                marginBottom: 12,
-              }}
-            >
-              Score breakdown · total {activeScript ? activeScript.total : ""}
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, letterSpacing: "0.5px", color: "rgba(249,244,234,0.75)", marginBottom: 14 }}>
+              {winner ? winner.title : ""} · score {winner ? winner.total : ""}
             </div>
-            {activeScript &&
-              SCORE_META.map((m) => (
-                <div key={m.key} style={{ marginBottom: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: 5 }}>
-                    <span style={{ color: "var(--ink)" }}>
-                      {m.label}{" "}
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>
-                        {m.weight}
-                      </span>
-                    </span>
-                    <span style={{ fontFamily: "var(--font-mono)", color: "var(--ink-soft)" }}>
-                      {activeScript.scores[m.key]}
-                    </span>
-                  </div>
-                  <div style={{ height: 7, borderRadius: 999, background: "var(--surface2)", overflow: "hidden" }}>
-                    <div
-                      style={{
-                        height: "100%",
-                        width: `${activeScript.scores[m.key]}%`,
-                        background: "var(--tan)",
-                        borderRadius: 999,
-                        transition: "width .5s ease",
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
-          </div>
-          <div>
-            <div
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "10.5px",
-                letterSpacing: "0.8px",
-                textTransform: "uppercase",
-                color: "var(--muted)",
-                marginBottom: 12,
-              }}
-            >
-              Reasoning trace
-            </div>
-            <p style={{ margin: "0 0 14px", fontSize: "13.5px", lineHeight: 1.6, color: "var(--ink-soft)" }}>
-              {activeScript ? activeScript.reasoning : ""}
-            </p>
-            <div
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "10.5px",
-                letterSpacing: "0.8px",
-                textTransform: "uppercase",
-                color: "var(--muted)",
-                marginBottom: 8,
-              }}
-            >
-              Lines
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {activeScript?.lines.map((line, i) => (
-                <div
-                  key={i}
-                  style={{
-                    fontFamily: "var(--font-serif)",
-                    fontSize: 15,
-                    color: "var(--ink)",
-                    paddingLeft: 12,
-                    borderLeft: "2px solid var(--line-strong)",
-                  }}
-                >
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 34 }}>
+              {winner?.lines.map((line, i) => (
+                <div key={i} style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "clamp(24px, 3vw, 34px)", lineHeight: 1.35 }}>
                   {line}
                 </div>
               ))}
             </div>
-          </div>
-        </div>
+            <div style={{ width: 48, height: 2, background: "var(--accent)", marginBottom: 34 }} />
 
-        {merge && (
-          <>
-            <div style={{ marginTop: 20, border: "1px solid var(--line-strong)", borderRadius: 12, overflow: "hidden" }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "12px 16px",
-                  background: "var(--surface2)",
-                  borderBottom: "1px solid var(--line-strong)",
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 10,
-                    letterSpacing: "0.8px",
-                    padding: "3px 8px",
-                    borderRadius: 5,
-                    background: merge.status === "pass" ? "var(--tan)" : "var(--over)",
-                    color: "var(--accent-ink)",
-                  }}
-                >
-                  {merge.status.toUpperCase()}
-                </span>
-                <span
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 11,
-                    letterSpacing: "0.6px",
-                    textTransform: "uppercase",
-                    color: "var(--ink)",
-                  }}
-                >
-                  Merge validation · {merge.repairPath}
-                </span>
-              </div>
-              <div style={{ padding: 16 }}>
-                <p style={{ margin: "0 0 14px", fontSize: 13, lineHeight: 1.6, color: "var(--ink-soft)" }}>
-                  {merge.note}
-                </p>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <div style={{ border: "1px solid var(--line)", borderRadius: 9, padding: 12, background: "var(--bg)" }}>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 10,
-                        letterSpacing: "0.6px",
-                        textTransform: "uppercase",
-                        color: "var(--over)",
-                        marginBottom: 7,
-                      }}
-                    >
-                      Before · {merge.seam.location}
+            {merge && (
+              <div style={{ borderTop: "1px solid rgba(249,244,234,0.16)", paddingTop: 22 }}>
+                <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: "rgba(249,244,234,0.72)", marginBottom: 12 }}>
+                  Merge validation · {merge.status.toUpperCase()} · {merge.repairPath}
+                </div>
+                <p style={{ margin: "0 0 16px", fontSize: 13, lineHeight: 1.6, color: "rgba(249,244,234,0.72)", maxWidth: "60ch" }}>{merge.note}</p>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                  <div>
+                    <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "rgba(249,244,234,0.7)", marginBottom: 6 }}>
+                      Before
                     </div>
-                    <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--ink)" }}>{merge.seam.before}</p>
+                    <p style={{ margin: 0, fontSize: "12.5px", lineHeight: 1.6, color: "rgba(249,244,234,0.55)", textDecorationLine: "line-through", textDecorationColor: "rgba(249,244,234,0.25)" }}>
+                      {merge.seam.before}
+                    </p>
                   </div>
-                  <div style={{ border: "1px solid var(--tan)", borderRadius: 9, padding: 12, background: "var(--bg)" }}>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 10,
-                        letterSpacing: "0.6px",
-                        textTransform: "uppercase",
-                        color: "var(--tan)",
-                        marginBottom: 7,
-                      }}
-                    >
-                      After · copy-edit
+                  <div>
+                    <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--accent)", marginBottom: 6 }}>
+                      After
                     </div>
-                    <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--ink)" }}>{merge.seam.after}</p>
+                    <p style={{ margin: 0, fontSize: "12.5px", lineHeight: 1.6, color: "rgba(249,244,234,0.92)" }}>{merge.seam.after}</p>
                   </div>
                 </div>
-                <div style={{ marginTop: 12, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-                  Meta-Critic swap: {merge.metaCriticSwapFired ? "FIRED" : "not required"}
+                <div style={{ marginTop: 14, fontFamily: "var(--font-mono)", fontSize: 11, color: "rgba(249,244,234,0.45)" }}>
+                  Meta-Critic swap: {merge.metaCriticSwapFired ? "fired" : "not required"}
                 </div>
               </div>
+            )}
+          </div>
+
+          <div>
+            <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: "rgba(249,244,234,0.72)", marginBottom: 16 }}>
+              Other variants considered
+            </div>
+            <div role="tablist" aria-label="Script variants" style={{ display: "flex", flexDirection: "column" }}>
+              {scripts.map((sc, i) => {
+                const active = sc.id === activeId;
+                return (
+                  <button
+                    key={sc.id}
+                    id={`script-tab-${sc.id}`}
+                    tabIndex={active ? 0 : -1}
+                    role="tab"
+                    aria-selected={active}
+                    aria-controls={`script-panel-${sc.id}`}
+                    onClick={() => onSelectScript(sc.id)}
+                    onKeyDown={(e) => onTabKeyDown(e, i)}
+                    className="pcs-tab"
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      width: "100%",
+                      textAlign: "left",
+                      fontFamily: "var(--font-sans)",
+                      fontSize: 14,
+                      fontWeight: active ? 700 : 500,
+                      padding: "13px 12px",
+                      borderTop: "1px solid rgba(249,244,234,0.14)",
+                      borderBottom: "none",
+                      borderLeft: active ? "3px solid var(--accent)" : "3px solid transparent",
+                      borderRight: "none",
+                      background: active ? "rgba(249,244,234,0.08)" : "transparent",
+                      cursor: "pointer",
+                      color: active ? "var(--paper)" : "rgba(249,244,234,0.72)",
+                      minHeight: 44,
+                    }}
+                  >
+                    <span>{sc.title}</span>
+                    <span style={{ fontFamily: "var(--font-mono)", opacity: 0.55 }}>{sc.total}</span>
+                  </button>
+                );
+              })}
             </div>
 
-            <div style={{ marginTop: 18, padding: "18px 20px", borderRadius: 12, background: "var(--accent)", color: "var(--accent-ink)" }}>
-              <div
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "10.5px",
-                  letterSpacing: "1px",
-                  textTransform: "uppercase",
-                  opacity: 0.85,
-                  marginBottom: 8,
-                }}
-              >
-                Winning script · {winner ? winner.title : ""} · {winner ? winner.total : ""}
+            <div id={`script-panel-${activeId || ""}`} role="tabpanel" aria-labelledby={`script-tab-${activeId || ""}`} style={{ marginTop: 26 }}>
+              <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "rgba(249,244,234,0.72)", marginBottom: 12 }}>
+                {activeScript ? activeScript.title : ""} · breakdown
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                {winner?.lines.map((line, i) => (
-                  <div key={i} style={{ fontFamily: "var(--font-serif)", fontSize: 17 }}>
-                    {line}
+              {activeScript &&
+                SCORE_META.map((m) => (
+                  <div key={m.key} style={{ marginBottom: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4, color: "rgba(249,244,234,0.75)" }}>
+                      <span>{m.label}</span>
+                      <span style={{ fontFamily: "var(--font-mono)" }}>{activeScript.scores[m.key]}</span>
+                    </div>
+                    <div style={{ height: 2, background: "rgba(249,244,234,0.14)" }}>
+                      <div style={{ height: "100%", width: `${activeScript.scores[m.key]}%`, background: "var(--accent)", transition: "width .6s var(--ease)" }} />
+                    </div>
                   </div>
                 ))}
-              </div>
+              <p style={{ margin: "14px 0 0", fontSize: 12, lineHeight: 1.6, color: "rgba(249,244,234,0.72)" }}>
+                {activeScript ? activeScript.reasoning : ""}
+              </p>
             </div>
-          </>
-        )}
+          </div>
+        </div>
       </div>
-    </PanelRow>
+    </section>
   );
 }

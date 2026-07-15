@@ -2,157 +2,74 @@
 
 import type { CSSProperties } from "react";
 import type { Shot, ShotStatus } from "@/lib/types";
-import { PanelHead, panelStyle, PanelRow } from "../shared";
 
 interface ShotsPanelProps {
   shots: Shot[];
   shotOpenId: string | null;
   onToggle: (id: string) => void;
-  showConnector: boolean;
 }
 
 function statusMeta(status: ShotStatus | undefined) {
-  if (status === "done") return { label: "done", color: "var(--accent-ink)", bg: "var(--accent)" };
-  if (status === "fallback") return { label: "fallback", color: "var(--accent-ink)", bg: "var(--tan)" };
-  if (status === "generating") return { label: "generating", color: "var(--ink)", bg: "var(--surface2)" };
-  if (status === "retrying") return { label: "retry 3/3", color: "var(--accent-ink)", bg: "var(--warn)" };
-  return { label: "queued", color: "var(--muted)", bg: "transparent" };
+  if (status === "done") return { label: "done", color: "var(--ink-soft)" };
+  if (status === "fallback") return { label: "fallback", color: "var(--accent)" };
+  if (status === "generating") return { label: "generating", color: "var(--ink)" };
+  if (status === "retrying") return { label: "retry", color: "var(--warn)" };
+  return { label: "queued", color: "var(--faint)" };
 }
 
-export default function ShotsPanel({ shots, shotOpenId, onToggle, showConnector }: ShotsPanelProps) {
+export default function ShotsPanel({ shots, shotOpenId, onToggle }: ShotsPanelProps) {
   const shotsDone = shots.filter((x) => x.status === "done" || x.status === "fallback").length;
 
   return (
-    <PanelRow showConnector={showConnector}>
-      <div style={panelStyle}>
-        <PanelHead tag="Shot Generator" title="Shot generation" pill={`${shotsDone} / ${shots.length} done`} />
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
-          {shots.map((sh) => {
-            const m = statusMeta(sh.status);
-            const isFallback = sh.status === "fallback";
-            const isReal = sh.status === "done";
-            const isGenerating = sh.status === "generating" || sh.status === "retrying";
-            const open = shotOpenId === sh.id;
-            const thumbBg: CSSProperties = isFallback
-              ? { backgroundImage: "repeating-linear-gradient(45deg, var(--tan) 0 8px, var(--surface2) 8px 16px)" }
-              : isReal
-                ? { background: "var(--accent)" }
-                : { backgroundImage: "repeating-linear-gradient(135deg, var(--surface2) 0 10px, var(--bg) 10px 20px)" };
-
-            return (
-              <div
-                key={sh.id}
-                onClick={() => onToggle(sh.id)}
-                style={{
-                  border: `1px solid ${isFallback ? "var(--tan)" : "var(--line-strong)"}`,
-                  borderRadius: 12,
-                  overflow: "hidden",
-                  cursor: "pointer",
-                  background: "var(--bg)",
-                }}
-              >
-                <div
-                  style={{
-                    position: "relative",
-                    width: "100%",
-                    aspectRatio: "16/10",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderBottom: "1px solid var(--line)",
-                    ...thumbBg,
-                  }}
-                >
-                  {isGenerating && (
-                    <span
-                      style={{
-                        width: 22,
-                        height: 22,
-                        borderRadius: "50%",
-                        border: "2.5px solid var(--line)",
-                        borderTopColor: "var(--tan)",
-                        display: "block",
-                        animation: "pc-spin 0.75s linear infinite",
-                      }}
-                    />
-                  )}
-                  {isFallback && (
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "9.5px",
-                        letterSpacing: "0.5px",
-                        color: "var(--accent-ink)",
-                        background: "var(--tan)",
-                        padding: "3px 7px",
-                        borderRadius: 5,
-                        position: "absolute",
-                        top: 8,
-                        left: 8,
-                      }}
-                    >
-                      KEN-BURNS
-                    </span>
-                  )}
-                  {isReal && (
-                    <span
-                      style={{
-                        width: 0,
-                        height: 0,
-                        borderTop: "8px solid transparent",
-                        borderBottom: "8px solid transparent",
-                        borderLeft: "13px solid var(--bg)",
-                        marginLeft: 3,
-                      }}
-                    />
-                  )}
-                </div>
-                <div style={{ padding: "11px 12px" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{sh.label}</span>
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "9.5px",
-                        letterSpacing: "0.4px",
-                        textTransform: "uppercase",
-                        padding: "3px 7px",
-                        borderRadius: 5,
-                        color: m.color,
-                        background: m.bg,
-                        border: m.bg === "transparent" ? "1px solid var(--line-strong)" : "none",
-                      }}
-                    >
-                      {m.label}
-                    </span>
-                  </div>
-                  {open && (
-                    <div
-                      style={{
-                        marginTop: 9,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 4,
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 11,
-                        color: "var(--muted)",
-                      }}
-                    >
-                      <span>lens · {sh.camera}</span>
-                      <span>move · {sh.move}</span>
-                      <span>len · {sh.duration}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ marginTop: 12, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-          Tap a shot for camera details. <span style={{ color: "var(--tan)" }}>Ken-Burns</span> = graceful fallback
-          (still-image pan), not a generated clip.
-        </div>
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+        <span style={{ fontFamily: "var(--font-sans)", fontSize: "11.5px", fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--ink-soft)" }}>
+          Shots
+        </span>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink)" }}>
+          {shotsDone} / {shots.length}
+        </span>
       </div>
-    </PanelRow>
+      <div data-rid="shots-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        {shots.map((sh) => {
+          const m = statusMeta(sh.status);
+          const isFallback = sh.status === "fallback";
+          const isReal = sh.status === "done";
+          const isGenerating = sh.status === "generating" || sh.status === "retrying";
+          const open = shotOpenId === sh.id;
+          const thumbBg: CSSProperties = isFallback
+            ? { backgroundColor: "transparent", backgroundImage: "repeating-linear-gradient(45deg, var(--accent) 0 6px, var(--paper) 6px 12px)" }
+            : isReal
+              ? { backgroundColor: "var(--ink)", backgroundImage: "none" }
+              : { backgroundColor: "rgba(18,52,59,0.06)", backgroundImage: "none" };
+
+          return (
+            <div key={sh.id} onClick={() => onToggle(sh.id)} style={{ border: "1px solid var(--hair-strong)", cursor: "pointer", background: "var(--paper)" }}>
+              <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 10", display: "flex", alignItems: "center", justifyContent: "center", borderBottom: "1px solid var(--hair)", ...thumbBg }}>
+                {isGenerating && (
+                  <span style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid rgba(18,52,59,0.2)", borderTopColor: "var(--accent)", display: "block", animation: "pc-spin 0.75s linear infinite" }} />
+                )}
+                {isFallback && (
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.4px", color: "var(--ink)", position: "absolute", top: 5, left: 6, background: "var(--paper)", padding: "1px 4px" }}>
+                    KEN-BURNS
+                  </span>
+                )}
+              </div>
+              <div style={{ padding: "7px 8px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+                  <span style={{ fontSize: "11.5px", fontWeight: 600, color: "var(--ink)" }}>{sh.label}</span>
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: m.color }}>{m.label}</span>
+                </div>
+                {open && (
+                  <div style={{ marginTop: 6, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-soft)", lineHeight: 1.5 }}>
+                    {sh.camera} · {sh.move} · {sh.duration}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

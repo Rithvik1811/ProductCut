@@ -6,10 +6,13 @@ import Header from "../components/Header";
 import Wizard from "../components/wizard/Wizard";
 import type { Photo } from "../components/wizard/types";
 import Dashboard from "../components/dashboard/Dashboard";
+import Library from "../components/library/Library";
 import { createMockJob } from "@/lib/mockStream";
+import { PRODUCT } from "@/lib/mockData";
 import type {
   Budget,
   Final,
+  HistoryEntry,
   Interrupt,
   InterruptResolution,
   JobEvent,
@@ -21,11 +24,13 @@ import type {
   Truth,
 } from "@/lib/types";
 import { useMergeState } from "@/lib/useMergeState";
+import "./studio.css";
 
 const STEP_MS = 340;
+const HISTORY_KEY = "pc-job-history";
 
 type Theme = "light" | "dark";
-type Status = "wizard" | "dashboard";
+type Status = "wizard" | "dashboard" | "library";
 
 interface State {
   theme: Theme;
@@ -68,6 +73,8 @@ interface State {
   hoveredTruthId: string | null;
   budgetOpenId: string | null;
   shotOpenId: string | null;
+
+  history: HistoryEntry[];
 }
 
 function initialState(): State {
@@ -112,6 +119,8 @@ function initialState(): State {
     hoveredTruthId: null,
     budgetOpenId: null,
     shotOpenId: null,
+
+    history: [],
   };
 }
 
@@ -149,6 +158,22 @@ export default function StudioPage() {
     if (saved === "light" || saved === "dark") {
       setState({ theme: saved });
     }
+
+    let history: HistoryEntry[] = [];
+    try {
+      history = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    } catch {
+      // ignore
+    }
+    setState({ history });
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("view") === "library") setState({ status: "library" });
+    } catch {
+      // ignore
+    }
+
     return () => {
       clearTimers();
       jobRef.current?.stop();
@@ -355,7 +380,21 @@ export default function StudioPage() {
             clearInterval(elapsedIntervalRef.current);
             elapsedIntervalRef.current = null;
           }
-          setState({ final: payload.final, jobDone: true, phase: "Delivery" });
+          setState((s) => {
+            const entry: HistoryEntry = {
+              productName: payload.product?.name || PRODUCT.name,
+              date: Date.now(),
+              truths: s.truths,
+              final: payload.final,
+            };
+            const history = [entry, ...s.history].slice(0, 20);
+            try {
+              localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+            } catch {
+              // ignore
+            }
+            return { final: payload.final, jobDone: true, phase: "Delivery", history };
+          });
           break;
         default:
           break;
@@ -397,15 +436,66 @@ export default function StudioPage() {
     clearTimers();
     jobRef.current?.stop();
     jobRef.current = null;
-    setState((s) => ({ ...initialState(), theme: s.theme }));
+    setState((s) => ({ ...initialState(), theme: s.theme, history: s.history }));
   }, [setState]);
+
+  // ---- library ("My Ads") ----
+  const openLibrary = useCallback(() => setState({ status: "library" }), [setState]);
+  const closeLibrary = useCallback(() => {
+    setState((s) => ({ status: s.truths.length ? "dashboard" : "wizard" }));
+  }, [setState]);
+  const openHistoryItem = useCallback(
+    (entry: HistoryEntry) => {
+      setState({
+        status: "dashboard",
+        jobDone: true,
+        phase: "Delivery",
+        phaseLabel: "",
+        truths: entry.truths,
+        scripts: [],
+        activeScriptId: null,
+        winnerId: null,
+        merge: null,
+        treatment: null,
+        budget: { shots: [], running: 0, cap: 0, unit: "" },
+        shots: [],
+        drift: {},
+        interrupt: null,
+        interruptResolution: null,
+        final: entry.final,
+      });
+    },
+    [setState],
+  );
+
+  // ---- script variant tablist: roving-tabindex + arrow-key nav ----
+  const handleScriptTabKey = useCallback(
+    (e: KeyboardEvent<HTMLButtonElement>, idx: number) => {
+      const scripts = state.scripts;
+      if (!scripts.length) return;
+      let next: number | null = null;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (idx + 1) % scripts.length;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = (idx - 1 + scripts.length) % scripts.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = scripts.length - 1;
+      if (next === null) return;
+      e.preventDefault();
+      const nextId = scripts[next].id;
+      setState({ activeScriptId: nextId });
+      requestAnimationFrame(() => {
+        document.getElementById(`script-tab-${nextId}`)?.focus();
+      });
+    },
+    [state.scripts, setState],
+  );
 
   return (
     <div
+      className="pc-studio"
       data-theme={state.theme}
       style={{
         minHeight: "100vh",
-        background: "var(--bg)",
+        background: "var(--paper)",
         color: "var(--ink)",
         fontFamily: "var(--font-sans)",
         WebkitFontSmoothing: "antialiased",
@@ -460,6 +550,8 @@ export default function StudioPage() {
           elapsed={state.elapsed}
           jobDone={state.jobDone}
           onResetPipeline={resetPipeline}
+          historyCount={state.history.length}
+          onOpenLibrary={openLibrary}
           truths={state.truths}
           hoveredTruthId={state.hoveredTruthId}
           onHoverTruth={(id) => setState({ hoveredTruthId: id })}
@@ -468,6 +560,7 @@ export default function StudioPage() {
           winnerId={state.winnerId}
           merge={state.merge}
           onSelectScript={(id) => setState({ activeScriptId: id })}
+          onScriptTabKey={handleScriptTabKey}
           treatment={state.treatment}
           budget={state.budget}
           budgetOpenId={state.budgetOpenId}
@@ -485,6 +578,8 @@ export default function StudioPage() {
           final={state.final}
         />
       )}
+
+      {state.status === "library" && <Library history={state.history} onClose={closeLibrary} onOpen={openHistoryItem} />}
     </div>
   );
 }

@@ -48,6 +48,10 @@
   background: var(--accent);
   color: var(--accent-ink);
 }
+.pc-home :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 
 .pc-home .pch-navlink {
   color: var(--faint);

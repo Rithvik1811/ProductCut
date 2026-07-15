@@ -1,5 +1,7 @@
 "use client";
 
+import type { KeyboardEvent } from "react";
+import Link from "next/link";
 import { PRODUCT } from "@/lib/mockData";
 import type {
   Budget,
@@ -13,13 +15,13 @@ import type {
   Truth,
 } from "@/lib/types";
 import { PHASES } from "@/lib/mockStream";
+import TruthsPanel from "./panels/TruthsPanel";
+import ScriptsPanel from "./panels/ScriptsPanel";
+import TreatmentPanel from "./panels/TreatmentPanel";
 import BudgetPanel from "./panels/BudgetPanel";
+import ShotsPanel from "./panels/ShotsPanel";
 import ContinuityPanel from "./panels/ContinuityPanel";
 import FinalPanel from "./panels/FinalPanel";
-import ScriptsPanel from "./panels/ScriptsPanel";
-import ShotsPanel from "./panels/ShotsPanel";
-import TreatmentPanel from "./panels/TreatmentPanel";
-import TruthsPanel from "./panels/TruthsPanel";
 
 export interface DashboardProps {
   phase: string;
@@ -27,6 +29,9 @@ export interface DashboardProps {
   elapsed: number;
   jobDone: boolean;
   onResetPipeline: () => void;
+
+  historyCount: number;
+  onOpenLibrary: () => void;
 
   truths: Truth[];
   hoveredTruthId: string | null;
@@ -37,6 +42,7 @@ export interface DashboardProps {
   winnerId: string | null;
   merge: MergeValidation | null;
   onSelectScript: (id: string) => void;
+  onScriptTabKey: (e: KeyboardEvent<HTMLButtonElement>, index: number) => void;
 
   treatment: Treatment | null;
 
@@ -73,6 +79,8 @@ export default function Dashboard(props: DashboardProps) {
     elapsed,
     jobDone,
     onResetPipeline,
+    historyCount,
+    onOpenLibrary,
     truths,
     hoveredTruthId,
     onHoverTruth,
@@ -81,6 +89,7 @@ export default function Dashboard(props: DashboardProps) {
     winnerId,
     merge,
     onSelectScript,
+    onScriptTabKey,
     treatment,
     budget,
     budgetOpenId,
@@ -103,97 +112,69 @@ export default function Dashboard(props: DashboardProps) {
 
   const hasTruths = truths.length > 0;
   const hasScripts = scripts.length > 0;
-  const hasTreatment = !!treatment;
   const hasBudget = budget.shots.length > 0;
   const hasShots = shots.length > 0;
   const hasInterrupt = !!interrupt;
   const hasDriftPanel = hasInterrupt || Object.keys(drift).length > 0 || !!interruptResolution;
-  const hasFinal = !!final;
+  const hasOps = hasBudget || hasShots || hasDriftPanel;
+  const historyCountLabel = historyCount ? ` (${historyCount})` : "";
 
   return (
     <div>
       <div
-        style={{
-          position: "sticky",
-          top: 67,
-          zIndex: 20,
-          background: "var(--bg)",
-          borderBottom: "1px solid var(--line-strong)",
-          padding: "14px 40px",
-        }}
+        data-rid="status-bar"
+        style={{ position: "sticky", top: 67, zIndex: 20, background: "var(--paper)", borderBottom: "1px solid var(--hair)", padding: "16px 48px" }}
       >
-        <div style={{ maxWidth: 1080, margin: "0 auto", display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span
-              style={{
-                width: 10,
-                height: 10,
-                borderRadius: "50%",
-                flex: "0 0 auto",
-                background: "var(--tan)",
-                animation: jobDone ? undefined : "pc-pulse 1.2s ease infinite",
-              }}
-            />
-            <div style={{ lineHeight: 1.2 }}>
-              <div style={{ fontFamily: "var(--font-serif)", fontSize: 18 }}>{PRODUCT.name}</div>
-              <div
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "10.5px",
-                  letterSpacing: "0.5px",
-                  textTransform: "uppercase",
-                  color: "var(--muted)",
-                }}
-              >
-                {jobStatusLine}
-              </div>
-            </div>
+        <div style={{ maxWidth: 1180, margin: "0 auto", display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
+          <div style={{ lineHeight: 1.25 }}>
+            <div style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: 17 }}>{PRODUCT.name}</div>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, letterSpacing: "0.4px", color: "var(--faint)" }}>{jobStatusLine}</div>
           </div>
-          <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 6, justifyContent: "center", flexWrap: "wrap" }}>
+          <div
+            data-rid="phase-chips"
+            style={{ flex: 1, display: "flex", alignItems: "center", gap: 10, justifyContent: "center", flexWrap: "wrap", fontFamily: "var(--font-sans)", fontSize: 12, letterSpacing: "0.3px", position: "relative" }}
+          >
             {PHASES.map((p, i) => {
               const done = jobDone || i < curPhaseIdx;
               const active = !jobDone && i === curPhaseIdx;
+              const color = active ? "var(--ink)" : done ? "var(--ink-soft)" : "var(--faint)";
               return (
                 <span
                   key={p}
                   style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 10,
-                    letterSpacing: "0.5px",
-                    textTransform: "uppercase",
-                    padding: "4px 9px",
-                    borderRadius: 6,
-                    whiteSpace: "nowrap",
-                    ...(active
-                      ? { background: "var(--tan)", color: "var(--accent-ink)", fontWeight: 700 }
-                      : done
-                        ? { background: "var(--surface2)", color: "var(--ink-soft)" }
-                        : { background: "transparent", color: "var(--muted)", opacity: 0.55, border: "1px solid var(--line)" }),
+                    color,
+                    fontWeight: active ? 700 : 400,
+                    textDecorationLine: active ? "underline" : "none",
+                    textDecorationColor: "var(--accent)",
+                    textUnderlineOffset: 4,
                   }}
                 >
                   {p}
                 </span>
               );
             })}
+            <div data-rid="phase-fade" style={{ display: "none", position: "absolute", right: 0, top: 0, bottom: 0, width: 28, background: "linear-gradient(90deg, transparent, var(--paper))", pointerEvents: "none" }} />
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--ink-soft)" }}>
-              {formatElapsed(elapsed)}
-            </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: "12.5px", color: "var(--ink-soft)" }}>{formatElapsed(elapsed)}</span>
+            <Link
+              href="/"
+              className="pcs-hover-ink"
+              style={{ fontFamily: "var(--font-sans)", fontSize: 12, fontWeight: 600, color: "var(--ink-soft)", textDecoration: "none", borderBottom: "1px solid var(--hair-strong)", cursor: "pointer", padding: "8px 4px" }}
+            >
+              Home
+            </Link>
+            <button
+              onClick={onOpenLibrary}
+              className="pcs-hover-ink"
+              style={{ fontFamily: "var(--font-sans)", fontSize: 12, fontWeight: 600, color: "var(--ink-soft)", background: "transparent", border: "none", borderBottom: "1px solid var(--hair-strong)", cursor: "pointer", padding: "8px 4px" }}
+            >
+              My Ads{historyCountLabel}
+            </button>
             <button
               onClick={onResetPipeline}
-              className="pc-hoverable"
-              style={{
-                fontFamily: "var(--font-sans)",
-                fontSize: "12.5px",
-                fontWeight: 600,
-                padding: "8px 14px",
-                border: "1px solid var(--line-strong)",
-                background: "transparent",
-                color: "var(--ink)",
-                borderRadius: 8,
-                cursor: "pointer",
-              }}
+              className="pcs-hover-ink"
+              style={{ fontFamily: "var(--font-sans)", fontSize: 12, fontWeight: 600, color: "var(--ink-soft)", background: "transparent", border: "none", borderBottom: "1px solid var(--hair-strong)", cursor: "pointer", padding: "8px 4px" }}
             >
               New job
             </button>
@@ -201,56 +182,50 @@ export default function Dashboard(props: DashboardProps) {
         </div>
       </div>
 
-      <main style={{ maxWidth: 1080, margin: "0 auto", padding: "34px 40px 90px" }}>
-        {hasTruths && (
-          <TruthsPanel truths={truths} hoveredTruthId={hoveredTruthId} onHoverTruth={onHoverTruth} showConnector={hasScripts} />
-        )}
+      {hasTruths && <TruthsPanel truths={truths} hoveredTruthId={hoveredTruthId} onHoverTruth={onHoverTruth} />}
 
-        {hasScripts && (
-          <ScriptsPanel
-            scripts={scripts}
-            activeScriptId={activeScriptId}
-            winnerId={winnerId}
-            merge={merge}
-            onSelectScript={onSelectScript}
-            showConnector={hasTreatment}
-          />
-        )}
+      {hasScripts && (
+        <ScriptsPanel
+          scripts={scripts}
+          activeScriptId={activeScriptId}
+          winnerId={winnerId}
+          merge={merge}
+          onSelectScript={onSelectScript}
+          onTabKeyDown={onScriptTabKey}
+        />
+      )}
 
-        {treatment && (
-          <TreatmentPanel
-            treatment={treatment}
-            truths={truths}
-            hoveredTruthId={hoveredTruthId}
-            onHoverTruth={onHoverTruth}
-            showConnector={hasBudget}
-          />
-        )}
+      {treatment && (
+        <TreatmentPanel treatment={treatment} truths={truths} hoveredTruthId={hoveredTruthId} onHoverTruth={onHoverTruth} />
+      )}
 
-        {hasBudget && (
-          <BudgetPanel budget={budget} budgetOpenId={budgetOpenId} onToggle={onToggleBudgetRow} showConnector={hasShots} />
-        )}
+      {hasOps && (
+        <section data-rid="section-pad" style={{ background: "var(--paper-deep)", padding: "60px 48px 68px", animation: "pc-section-in 0.6s var(--ease) both" }}>
+          <div style={{ maxWidth: 1180, margin: "0 auto" }}>
+            <span style={{ fontFamily: "var(--font-sans)", fontSize: "11.5px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: "var(--ink-soft)", display: "block", marginBottom: 34 }}>
+              Producer · Shot Generator · Continuity Guard
+            </span>
+            <div data-rid="ops-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 44, alignItems: "start" }}>
+              {hasBudget && <BudgetPanel budget={budget} budgetOpenId={budgetOpenId} onToggle={onToggleBudgetRow} />}
+              {hasShots && <ShotsPanel shots={shots} shotOpenId={shotOpenId} onToggle={onToggleShot} />}
+              {hasDriftPanel && (
+                <ContinuityPanel
+                  shots={shots}
+                  drift={drift}
+                  driftThreshold={driftThreshold}
+                  interrupt={interrupt}
+                  interruptResolution={interruptResolution}
+                  onApprove={onApprove}
+                  onRetry={onRetry}
+                  onFallback={onFallback}
+                />
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
-        {hasShots && (
-          <ShotsPanel shots={shots} shotOpenId={shotOpenId} onToggle={onToggleShot} showConnector={hasDriftPanel} />
-        )}
-
-        {hasDriftPanel && (
-          <ContinuityPanel
-            shots={shots}
-            drift={drift}
-            driftThreshold={driftThreshold}
-            interrupt={interrupt}
-            interruptResolution={interruptResolution}
-            onApprove={onApprove}
-            onRetry={onRetry}
-            onFallback={onFallback}
-            showConnector={hasFinal}
-          />
-        )}
-
-        {final && <FinalPanel final={final} />}
-      </main>
+      {final && <FinalPanel final={final} />}
     </div>
   );
 }

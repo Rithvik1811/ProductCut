@@ -1,95 +1,57 @@
 "use client";
 
 import type { Budget } from "@/lib/types";
-import { PanelHead, panelStyle, PanelRow } from "../shared";
 
 interface BudgetPanelProps {
   budget: Budget & { running: number };
   budgetOpenId: string | null;
   onToggle: (id: string) => void;
-  showConnector: boolean;
 }
 
-export default function BudgetPanel({ budget, budgetOpenId, onToggle, showConnector }: BudgetPanelProps) {
+export default function BudgetPanel({ budget, budgetOpenId, onToggle }: BudgetPanelProps) {
   const bCap = budget.cap || 1;
   const bRun = budget.running;
   const bPct = Math.min(bRun / bCap, 1) * 100;
   const overRatio = bRun / bCap;
-  const budgetColor = overRatio > 1 ? "var(--over)" : overRatio > 0.85 ? "var(--warn)" : "var(--accent)";
-  const budgetStateLabel = overRatio > 1 ? "OVER CAP" : overRatio > 0.85 ? "Approaching cap" : "Within budget";
+  const budgetColor = overRatio > 1 ? "var(--over)" : overRatio > 0.85 ? "var(--warn)" : "var(--ink)";
+  const budgetStateLabel = overRatio > 1 ? "over cap" : overRatio > 0.85 ? "approaching cap" : "within budget";
 
   return (
-    <PanelRow showConnector={showConnector}>
-      <div style={panelStyle}>
-        <PanelHead
-          tag="Producer"
-          title="Budget ledger"
-          pill={`${bRun} / ${budget.cap || 0} ${budget.unit || ""}`}
-          pillColor={budgetColor}
-        />
-        <div
-          style={{
-            height: 12,
-            borderRadius: 999,
-            background: "var(--surface2)",
-            overflow: "hidden",
-            position: "relative",
-            marginBottom: 6,
-          }}
-        >
-          <div
-            style={{
-              height: "100%",
-              width: `${bPct}%`,
-              background: budgetColor,
-              borderRadius: 999,
-              transition: "width .5s ease",
-            }}
-          />
-          <div style={{ position: "absolute", top: -3, bottom: -3, left: "100%", width: 2, background: "var(--ink)", opacity: 0.5 }} />
-        </div>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            fontFamily: "var(--font-mono)",
-            fontSize: "10.5px",
-            color: "var(--muted)",
-            marginBottom: 16,
-          }}
-        >
-          <span>{budgetStateLabel}</span>
-          <span>cap {(budget.cap || 0) + " " + (budget.unit || "")}</span>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column" }}>
-          {budget.shots.map((sh) => {
-            const open = budgetOpenId === sh.id;
-            const barWidth = Math.min((sh.alloc / bCap) * 100 * 3, 100);
-            return (
-              <div
-                key={sh.id}
-                onClick={() => onToggle(sh.id)}
-                style={{ padding: "11px 2px", borderTop: "1px solid var(--line)", cursor: "pointer" }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <span style={{ fontSize: "13.5px", color: "var(--ink)", flex: 1 }}>{sh.label}</span>
-                  <div style={{ width: 120, height: 6, borderRadius: 999, background: "var(--surface2)", overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${barWidth}%`, background: "var(--tan)", borderRadius: 999 }} />
-                  </div>
-                  <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--ink-soft)", minWidth: 30, textAlign: "right" }}>
-                    {sh.alloc}
-                  </span>
-                </div>
-                {open && (
-                  <p style={{ margin: "8px 0 2px", fontSize: "12.5px", lineHeight: 1.5, color: "var(--muted)" }}>
-                    {sh.justification}
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </div>
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+        <span style={{ fontFamily: "var(--font-sans)", fontSize: "11.5px", fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--ink-soft)" }}>
+          Budget
+        </span>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink)" }}>
+          {bRun} / {budget.cap || 0}
+        </span>
       </div>
-    </PanelRow>
+      <div style={{ height: 3, background: "rgba(18,52,59,0.14)", marginBottom: 4 }}>
+        <div style={{ height: "100%", width: `${bPct}%`, background: budgetColor, transition: "width .6s var(--ease)" }} />
+      </div>
+      <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 600, color: "var(--ink-soft)", marginBottom: 16 }}>
+        {budgetStateLabel}
+      </div>
+      <div>
+        {budget.shots.map((sh) => {
+          const open = budgetOpenId === sh.id;
+          return (
+            <div
+              key={sh.id}
+              onClick={() => onToggle(sh.id)}
+              style={{ padding: "12px 4px", borderTop: "1px solid var(--hair)", cursor: "pointer", minHeight: 44 }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, color: "var(--ink)", flex: 1 }}>{sh.label}</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-soft)" }}>{sh.alloc}</span>
+              </div>
+              {open && (
+                <p style={{ margin: "6px 0 0", fontSize: "11.5px", lineHeight: 1.5, color: "var(--ink-soft)" }}>{sh.justification}</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

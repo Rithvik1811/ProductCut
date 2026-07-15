@@ -1,7 +1,6 @@
 "use client";
 
 import type { Interrupt, InterruptResolution, Shot } from "@/lib/types";
-import { PanelHead, panelStyle, PanelRow } from "../shared";
 
 interface ContinuityPanelProps {
   shots: Shot[];
@@ -12,24 +11,18 @@ interface ContinuityPanelProps {
   onApprove: () => void;
   onRetry: () => void;
   onFallback: () => void;
-  showConnector: boolean;
 }
 
-const candThumbStyle = {
-  width: "100%",
-  aspectRatio: "1/1",
-  backgroundImage: "repeating-linear-gradient(135deg, var(--surface2) 0 8px, var(--bg) 8px 16px)",
-};
+const candThumbStyle = { width: "100%", aspectRatio: "1 / 1", background: "rgba(18,52,59,0.05)" };
 
 const actionBtnBase = {
   fontFamily: "var(--font-sans)",
-  fontSize: "13.5px",
+  fontSize: "11.5px",
   fontWeight: 600,
-  padding: "11px 20px",
-  border: "1px solid var(--line-strong)",
+  padding: "8px 12px",
+  border: "1px solid var(--hair-strong)",
   background: "transparent",
   color: "var(--ink)",
-  borderRadius: 9,
   cursor: "pointer",
 };
 
@@ -42,7 +35,6 @@ export default function ContinuityPanel({
   onApprove,
   onRetry,
   onFallback,
-  showConnector,
 }: ContinuityPanelProps) {
   const driftRows = shots
     .filter((sh) => drift[sh.id] != null)
@@ -54,106 +46,61 @@ export default function ContinuityPanel({
   const interruptResolvedShown = !!interruptResolution && !interrupt;
 
   return (
-    <PanelRow showConnector={showConnector}>
-      <div style={panelStyle}>
-        <PanelHead tag="Continuity Guard" title="Continuity & drift" />
+    <div>
+      <span style={{ fontFamily: "var(--font-sans)", fontSize: "11.5px", fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--ink-soft)", display: "block", marginBottom: 12 }}>
+        Continuity
+      </span>
 
-        {interrupt && (
-          <div
-            style={{
-              border: "1.5px solid var(--tan)",
-              borderRadius: 12,
-              overflow: "hidden",
-              marginBottom: 18,
-              animation: "pc-panel-in 0.4s ease",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: "var(--tan)", color: "var(--accent-ink)" }}>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.8px", textTransform: "uppercase", fontWeight: 700 }}>
-                ⚠ Human review needed
-              </span>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
-                {interrupt.label} · drift {interrupt.driftScore.toFixed(2)}
-              </span>
-            </div>
-            <div style={{ padding: 16 }}>
-              <p style={{ margin: "0 0 14px", fontSize: "13.5px", lineHeight: 1.55, color: "var(--ink)" }}>{interrupt.reason}</p>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 16 }}>
-                {interrupt.candidates.map((c) => (
-                  <div key={c.id} style={{ border: "1px solid var(--line-strong)", borderRadius: 9, overflow: "hidden" }}>
-                    <div style={candThumbStyle} />
-                    <div style={{ padding: "8px 9px", fontFamily: "var(--font-mono)", fontSize: "10.5px", color: "var(--muted)" }}>
-                      {c.note}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button
-                  onClick={onApprove}
-                  style={{
-                    fontFamily: "var(--font-sans)",
-                    fontSize: "13.5px",
-                    fontWeight: 700,
-                    padding: "11px 20px",
-                    border: "none",
-                    borderRadius: 9,
-                    cursor: "pointer",
-                    background: "var(--accent)",
-                    color: "var(--accent-ink)",
-                  }}
-                >
-                  Approve closest
-                </button>
-                <button onClick={onRetry} className="pc-hoverable" style={actionBtnBase}>
-                  Retry with edit
-                </button>
-                <button onClick={onFallback} className="pc-hoverable" style={actionBtnBase}>
-                  Accept Ken-Burns fallback
-                </button>
-              </div>
-            </div>
+      {interrupt && (
+        <div style={{ border: "1.5px solid var(--accent)", padding: 14, marginBottom: 14, background: "var(--paper)" }}>
+          <div style={{ fontFamily: "var(--font-mono)", fontSize: "11.5px", letterSpacing: "0.5px", color: "var(--accent)", fontWeight: 700, marginBottom: 8 }}>
+            ⚠ Human review · {interrupt.label} · drift {interrupt.driftScore.toFixed(2)}
           </div>
-        )}
-
-        {interruptResolvedShown && (
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "11.5px", color: "var(--tan)", marginBottom: 14 }}>
-            ✓ Review resolved — {interruptResolution}
-          </div>
-        )}
-
-        <div style={{ display: "flex", flexDirection: "column" }}>
-          {driftRows.map((row) => (
-            <div key={row.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "9px 2px", borderTop: "1px solid var(--line)" }}>
-              <span style={{ fontSize: 13, color: "var(--ink)", flex: 1 }}>{row.label}</span>
-              <div style={{ width: 160, height: 6, borderRadius: 999, background: "var(--surface2)", overflow: "hidden" }}>
-                <div
-                  style={{
-                    height: "100%",
-                    width: `${Math.min((row.score / 0.6) * 100, 100)}%`,
-                    background: row.ok ? "var(--accent)" : "var(--over)",
-                    borderRadius: 999,
-                  }}
-                />
+          <p style={{ margin: "0 0 12px", fontSize: 12, lineHeight: 1.5, color: "var(--ink)" }}>{interrupt.reason}</p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 12 }}>
+            {interrupt.candidates.map((c) => (
+              <div key={c.id} style={{ border: "1px solid var(--hair-strong)" }}>
+                <div style={candThumbStyle} />
+                <div style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-soft)" }}>{c.note}</div>
               </div>
-              <span
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  minWidth: 34,
-                  textAlign: "right",
-                  color: row.ok ? "var(--ink-soft)" : "var(--over)",
-                }}
-              >
-                {row.score.toFixed(2)}
-              </span>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={onApprove}
+              style={{ fontFamily: "var(--font-sans)", fontSize: "11.5px", fontWeight: 700, padding: "8px 12px", border: "none", cursor: "pointer", background: "var(--accent)", color: "var(--accent-ink)" }}
+            >
+              Approve
+            </button>
+            <button onClick={onRetry} className="pcs-hover-ink" style={actionBtnBase}>
+              Retry
+            </button>
+            <button onClick={onFallback} className="pcs-hover-ink" style={actionBtnBase}>
+              Accept fallback
+            </button>
+          </div>
+        </div>
+      )}
+
+      {interruptResolvedShown && (
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink)", marginBottom: 12 }}>
+          ✓ Resolved — {interruptResolution}
+        </div>
+      )}
+
+      <div>
+        {driftRows.map((row) => (
+          <div key={row.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px solid var(--hair)" }}>
+            <span style={{ fontSize: 12, color: "var(--ink)", flex: 1 }}>{row.label}</span>
+            <div style={{ width: 60, height: 3, background: "rgba(18,52,59,0.14)" }}>
+              <div style={{ height: "100%", width: `${Math.min((row.score / 0.6) * 100, 100)}%`, background: row.ok ? "var(--ink-soft)" : "var(--over)" }} />
             </div>
-          ))}
-        </div>
-        <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-          Lower is better. Auto-accept threshold ≤ {driftThreshold.toFixed(2)}.
-        </div>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, minWidth: 30, textAlign: "right", color: row.ok ? "var(--ink-soft)" : "var(--over)" }}>
+              {row.score.toFixed(2)}
+            </span>
+          </div>
+        ))}
       </div>
-    </PanelRow>
+    </div>
   );
 }

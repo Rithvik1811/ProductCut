@@ -143,3 +143,12 @@ export interface MockJob {
   stop(): void;
   readonly paused: boolean;
 }
+
+// ---- job history (Library / "My Ads") ----------------------------------------
+
+export interface HistoryEntry {
+  productName: string;
+  date: number;
+  truths: Truth[];
+  final: Final | null;
+}

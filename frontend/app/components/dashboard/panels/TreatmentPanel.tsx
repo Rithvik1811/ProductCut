@@ -1,107 +1,63 @@
 "use client";
 
 import type { Treatment, Truth } from "@/lib/types";
-import { categoryLabel, PanelHead, panelStyle, PanelRow } from "../shared";
+import { categoryLabel } from "../shared";
 
 interface TreatmentPanelProps {
   treatment: Treatment;
   truths: Truth[];
   hoveredTruthId: string | null;
   onHoverTruth: (id: string | null) => void;
-  showConnector: boolean;
 }
 
-export default function TreatmentPanel({
-  treatment,
-  truths,
-  hoveredTruthId,
-  onHoverTruth,
-  showConnector,
-}: TreatmentPanelProps) {
-  const infoCardStyle = { border: "1px solid var(--line)", borderRadius: 11, padding: 14, background: "var(--bg)" };
-  const infoLabelStyle = {
-    fontFamily: "var(--font-mono)",
-    fontSize: 10,
-    letterSpacing: "0.6px",
-    textTransform: "uppercase" as const,
-    color: "var(--tan)",
-    marginBottom: 7,
-  };
+export default function TreatmentPanel({ treatment, truths, hoveredTruthId, onHoverTruth }: TreatmentPanelProps) {
+  const facets = [
+    { label: "Persona", value: treatment.director_persona },
+    { label: "Color story", value: treatment.color_story },
+    { label: "Pacing", value: treatment.pacing_philosophy },
+  ];
 
   return (
-    <PanelRow showConnector={showConnector}>
-      <div style={panelStyle}>
-        <PanelHead tag="Director" title="Director's treatment" />
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
-          <div style={infoCardStyle}>
-            <div style={infoLabelStyle}>Persona</div>
-            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--ink)" }}>{treatment.director_persona}</p>
+    <section data-rid="section-pad" style={{ maxWidth: 1180, margin: "0 auto", padding: "76px 48px 60px", animation: "pc-section-in 0.6s var(--ease) both" }}>
+      <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "2px", textTransform: "uppercase", color: "var(--faint)", display: "block", marginBottom: 40 }}>
+        Director — the treatment
+      </span>
+      <div data-rid="facet-grid-wrap" style={{ display: "flex", flexDirection: "column", gap: 22, marginBottom: 52, maxWidth: 760 }}>
+        {facets.map((f) => (
+          <div key={f.label} data-rid="facet-grid" style={{ display: "grid", gridTemplateColumns: "130px 1fr", gap: 24 }}>
+            <span style={{ fontFamily: "var(--font-sans)", fontSize: 12, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: "var(--ink-soft)", paddingTop: 3 }}>
+              {f.label}
+            </span>
+            <p style={{ margin: 0, fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: 19, lineHeight: 1.5, color: "var(--ink)" }}>{f.value}</p>
           </div>
-          <div style={infoCardStyle}>
-            <div style={infoLabelStyle}>Color story</div>
-            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--ink)" }}>{treatment.color_story}</p>
-          </div>
-          <div style={infoCardStyle}>
-            <div style={infoLabelStyle}>Pacing</div>
-            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--ink)" }}>{treatment.pacing_philosophy}</p>
-          </div>
-        </div>
-        <div
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: "10.5px",
-            letterSpacing: "0.8px",
-            textTransform: "uppercase",
-            color: "var(--muted)",
-            marginBottom: 12,
-          }}
-        >
-          Beat-by-beat · hover a beat to trace its truth
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {treatment.beats.map((beat) => {
-            const truth = truths.find((t) => t.id === beat.truth_fact_id);
-            const label = truth ? categoryLabel(truth.category) : beat.truth_fact_id;
-            const activeLink = hoveredTruthId === beat.truth_fact_id;
-            return (
-              <div
-                key={beat.id}
-                onMouseEnter={() => onHoverTruth(beat.truth_fact_id)}
-                onMouseLeave={() => onHoverTruth(null)}
-                style={{
-                  border: `1px solid ${activeLink ? "var(--tan)" : "var(--line)"}`,
-                  borderRadius: 11,
-                  padding: "13px 15px",
-                  background: activeLink ? "var(--surface2)" : "var(--bg)",
-                  transition: "all .2s",
-                  cursor: "default",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginBottom: 6 }}>
-                  <span style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: 16, color: "var(--ink)" }}>
-                    &quot;{beat.script_quote}&quot;
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: "10.5px",
-                      letterSpacing: "0.5px",
-                      textTransform: "uppercase",
-                      whiteSpace: "nowrap",
-                      color: activeLink ? "var(--tan)" : "var(--ink-soft)",
-                    }}
-                  >
-                    ◆ {label}
-                  </span>
-                </div>
-                <p style={{ margin: 0, fontSize: "12.5px", lineHeight: 1.5, color: "var(--ink-soft)" }}>
-                  {beat.why_not_generic}
-                </p>
-              </div>
-            );
-          })}
-        </div>
+        ))}
       </div>
-    </PanelRow>
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "1px", textTransform: "uppercase", color: "var(--faint)", marginBottom: 18 }}>
+        Beat by beat — hover to trace the truth
+      </div>
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {treatment.beats.map((beat) => {
+          const truth = truths.find((t) => t.id === beat.truth_fact_id);
+          const label = truth ? categoryLabel(truth.category) : beat.truth_fact_id;
+          const activeLink = hoveredTruthId === beat.truth_fact_id;
+          return (
+            <div
+              key={beat.id}
+              data-rid="beat-row"
+              onMouseEnter={() => onHoverTruth(beat.truth_fact_id)}
+              onMouseLeave={() => onHoverTruth(null)}
+              style={{ display: "flex", gap: 16, alignItems: "baseline", justifyContent: "space-between", padding: "16px 4px", borderTop: "1px solid var(--hair)" }}
+            >
+              <span style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: 17, color: "var(--ink)", flex: 1 }}>
+                &quot;{beat.script_quote}&quot;
+              </span>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: "11.5px", letterSpacing: "0.5px", textTransform: "uppercase", whiteSpace: "nowrap", color: activeLink ? "var(--accent)" : "var(--faint)" }}>
+                → {label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }

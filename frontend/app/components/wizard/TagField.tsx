@@ -21,19 +21,11 @@ export default function TagField({
   onKeyDown,
   onRemove,
 }: TagFieldProps) {
+  const tagBorder = variant === "outline" ? "1px solid var(--accent)" : "1px solid var(--hair-strong)";
+  const removeColor = variant === "outline" ? "var(--accent)" : "var(--faint)";
+
   return (
-    <div
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: 8,
-        alignItems: "center",
-        padding: 9,
-        border: "1px solid var(--line-strong)",
-        borderRadius: 10,
-        background: "var(--bg)",
-      }}
-    >
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
       {tags.map((tag, i) => (
         <span
           key={i}
@@ -41,28 +33,16 @@ export default function TagField({
             display: "inline-flex",
             alignItems: "center",
             gap: 6,
-            padding: "5px 7px 5px 12px",
-            background: variant === "solid" ? "var(--surface2)" : "transparent",
-            border: variant === "outline" ? "1px solid var(--tan)" : undefined,
+            padding: "4px 5px 4px 11px",
+            border: tagBorder,
             color: "var(--ink)",
-            borderRadius: 999,
             fontSize: 13,
-            fontWeight: 500,
           }}
         >
           {tag}
           <button
             onClick={() => onRemove(i)}
-            style={{
-              border: "none",
-              background: "none",
-              cursor: "pointer",
-              color: "inherit",
-              fontSize: 15,
-              lineHeight: 1,
-              opacity: 0.6,
-              padding: "0 2px",
-            }}
+            style={{ border: "none", background: "none", cursor: "pointer", color: removeColor, fontSize: 14, lineHeight: 1, padding: "0 2px" }}
           >
             ×
           </button>
@@ -74,15 +54,17 @@ export default function TagField({
         onChange={(e) => onInputChange(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder={placeholder}
+        className="pcs-underline-input"
         style={{
-          flex: 1,
-          minWidth: 150,
           border: "none",
+          borderBottom: "1px solid var(--hair-strong)",
           background: "transparent",
           fontFamily: "var(--font-sans)",
           fontSize: 14,
           color: "var(--ink)",
-          padding: "4px 6px",
+          padding: "6px 2px",
+          minWidth: 160,
+          marginTop: 8,
         }}
       />
     </div>

@@ -52,20 +52,7 @@ export interface WizardProps {
 }
 
 export default function Wizard(props: WizardProps) {
-  const {
-    step,
-    transitioning,
-    photos,
-    brief,
-    moodWords,
-    refLink,
-    neverList,
-    notes,
-    goNext,
-    goBack,
-    goStep,
-    onGenerate,
-  } = props;
+  const { step, transitioning, photos, brief, goNext, goBack, goStep, onGenerate } = props;
 
   const nextDisabled = (step === 1 && photos.length < 1) || (step === 2 && !brief.trim());
   const showBack = step > 1;
@@ -77,96 +64,84 @@ export default function Wizard(props: WizardProps) {
   if (step === 1 && photos.length < 1) nextHint = "Add at least one photo to continue";
   else if (step === 2 && !brief.trim()) nextHint = "Write a one-line brief to continue";
 
+  const stepNum = step <= 3 ? `0${step}` : "✓";
+  const stepLabel = step <= 3 ? `Step ${step} / 3` : "Review";
+
   const wizardWrapStyle = {
-    minHeight: 300,
-    animation: transitioning ? `pc-step-out ${STEP_MS}ms ease forwards` : `pc-step-in ${STEP_MS}ms ease`,
+    animation: transitioning
+      ? `pc-studio-step-out ${STEP_MS}ms var(--ease) forwards`
+      : `pc-studio-step-in ${STEP_MS}ms var(--ease)`,
   };
 
-  const ghostBtnStyle = {
+  const nextBtnStyle = {
     fontFamily: "var(--font-sans)",
     fontSize: 14,
     fontWeight: 600,
-    padding: "12px 20px",
-    border: "1px solid var(--line-strong)",
+    padding: "12px 0",
+    borderTop: "none",
+    borderLeft: "none",
+    borderRight: "none",
+    borderBottom: nextDisabled ? "1px solid transparent" : "1px solid var(--ink)",
     background: "transparent",
-    color: "var(--ink)",
-    borderRadius: 10,
-    cursor: "pointer",
-  };
-  const nextBtnStyle = {
-    fontFamily: "var(--font-sans)",
-    fontSize: 15,
-    fontWeight: 700,
-    padding: "14px 30px",
-    border: "none",
-    borderRadius: 11,
     ...(nextDisabled
-      ? { cursor: "not-allowed", opacity: 0.5, background: "var(--surface2)", color: "var(--muted)" }
-      : { cursor: "pointer", background: "var(--accent)", color: "var(--accent-ink)", boxShadow: "0 6px 18px var(--shadow)" }),
+      ? { cursor: "not-allowed" as const, color: "var(--faint)" }
+      : { cursor: "pointer" as const, color: "var(--ink)" }),
   };
   const generateBtnStyle = {
     fontFamily: "var(--font-sans)",
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: 700,
-    padding: "15px 32px",
+    padding: "16px 34px",
     border: "none",
-    borderRadius: 11,
     cursor: "pointer",
     background: "var(--accent)",
     color: "var(--accent-ink)",
-    boxShadow: "0 6px 20px var(--shadow)",
+    transition: "transform .4s var(--ease), box-shadow .4s var(--ease)",
   };
 
   return (
-    <div>
+    <main
+      data-rid="wizard-main"
+      style={{
+        maxWidth: 1020,
+        margin: "0 auto",
+        padding: "26px 56px 64px",
+        position: "relative",
+        overflow: "hidden",
+        minHeight: "calc(100vh - 160px)",
+      }}
+    >
       <div
+        data-rid="ghost-num"
         style={{
-          borderBottom: "1px solid var(--line)",
-          overflow: "hidden",
-          whiteSpace: "nowrap",
-          padding: "8px 46px",
-          fontFamily: "var(--font-mono)",
-          fontSize: 11,
-          letterSpacing: "1px",
-          textTransform: "uppercase",
-          color: "var(--muted)",
+          position: "absolute",
+          top: -40,
+          right: -10,
+          fontFamily: "var(--font-serif)",
+          fontStyle: "italic",
+          fontWeight: 400,
+          fontSize: 280,
+          lineHeight: 1,
+          color: "var(--hair)",
+          pointerEvents: "none",
+          userSelect: "none",
+          zIndex: 0,
         }}
       >
-        For Etsy &amp; Shopify makers &nbsp;·&nbsp; Reads your real photos &nbsp;·&nbsp; Grounds every claim in a
-        fact &nbsp;·&nbsp; Never invents what isn&apos;t there &nbsp;·&nbsp; Short-form ads, small-batch care
+        {stepNum}
       </div>
 
-      <main style={{ maxWidth: 720, margin: "0 auto", padding: "48px 32px 80px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 40 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 7, flex: 1 }}>
-            {[1, 2, 3].map((i) => (
-              <span
-                key={i}
-                style={{
-                  height: 4,
-                  borderRadius: 999,
-                  flex: 1,
-                  background: step >= i ? "var(--tan)" : "var(--line-strong)",
-                  transition: "background-color .3s ease",
-                }}
-              />
-            ))}
-          </div>
-          <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              letterSpacing: "1.5px",
-              textTransform: "uppercase",
-              color: "var(--muted)",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {step <= 3 ? `Step ${step} of 3` : "Review"}
+      <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", minHeight: "calc(100vh - 210px)" }}>
+        <div data-rid="wizard-toprow" style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 54 }}>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, letterSpacing: "2px", textTransform: "uppercase", color: "var(--faint)" }}>
+            {stepLabel}
+          </span>
+          <span style={{ fontFamily: "var(--font-sans)", fontSize: 12, fontWeight: 600, letterSpacing: "1px", textTransform: "uppercase", color: "var(--faint)" }}>
+            For Etsy &amp; Shopify makers
           </span>
         </div>
 
-        <div style={wizardWrapStyle}>
+        <div style={{ ...wizardWrapStyle, flex: 1 }}>
           {step === 1 && (
             <PhotosStep
               photos={props.photos}
@@ -206,10 +181,10 @@ export default function Wizard(props: WizardProps) {
             <SummaryStep
               photos={photos}
               brief={brief}
-              moodWords={moodWords}
-              refLink={refLink}
-              neverList={neverList}
-              notes={notes}
+              moodWords={props.moodWords}
+              refLink={props.refLink}
+              neverList={props.neverList}
+              notes={props.notes}
               onEditPhotos={() => goStep(1)}
               onEditBrief={() => goStep(2)}
               onEditDirection={() => goStep(3)}
@@ -217,9 +192,13 @@ export default function Wizard(props: WizardProps) {
           )}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 32 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 28, marginTop: 48, paddingTop: 22, borderTop: "1px solid var(--hair)" }}>
           {showBack && (
-            <button onClick={goBack} className="pc-hoverable" style={ghostBtnStyle}>
+            <button
+              onClick={goBack}
+              className="pcs-hover-ink"
+              style={{ fontFamily: "var(--font-sans)", fontSize: "13.5px", fontWeight: 600, color: "var(--ink-soft)", background: "none", border: "none", cursor: "pointer", padding: "6px 0", letterSpacing: "0.2px" }}
+            >
               ← Back
             </button>
           )}
@@ -227,17 +206,8 @@ export default function Wizard(props: WizardProps) {
           {showSkip && (
             <button
               onClick={goNext}
-              className="pc-skip"
-              style={{
-                fontFamily: "var(--font-sans)",
-                fontSize: 14,
-                fontWeight: 600,
-                color: "var(--muted)",
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                padding: "12px 8px",
-              }}
+              className="pcs-hover-ink"
+              style={{ fontFamily: "var(--font-sans)", fontSize: "13.5px", fontWeight: 600, color: "var(--faint)", background: "none", border: "none", cursor: "pointer", padding: "6px 0" }}
             >
               Skip for now
             </button>
@@ -254,19 +224,11 @@ export default function Wizard(props: WizardProps) {
           )}
         </div>
         {nextHint && (
-          <div
-            style={{
-              textAlign: "right",
-              marginTop: 12,
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              color: "var(--muted)",
-            }}
-          >
+          <div style={{ textAlign: "right", marginTop: 10, fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--faint)" }}>
             {nextHint}
           </div>
         )}
-      </main>
-    </div>
+      </div>
+    </main>
   );
 }
