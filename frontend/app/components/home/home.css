@@ -1,0 +1,160 @@
+/* Scoped design tokens + rules for the marketing Home page.
+   Named to match the approved Claude Design file 1:1 (--paper, --ink, --accent, ...)
+   but scoped under .pc-home so they never leak into / collide with the app-wide
+   theme tokens in ../../globals.css used by the studio (wizard + dashboard). */
+
+.pc-home {
+  --paper: #f9f4ea;
+  --paper-deep: #efe0cb;
+  --ink: #12343b;
+  --ink-soft: #4b6264;
+  --faint: #5f716f;
+  --accent: #c89666;
+  --accent-ink: #f9f4ea;
+  --hair: rgba(18, 52, 59, 0.1);
+  --hair-strong: rgba(18, 52, 59, 0.24);
+  --shadow: rgba(18, 52, 59, 0.12);
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --inverse-bg: #12343b;
+  --inverse-fg: #f9f4ea;
+
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  transition:
+    background-color 0.3s var(--ease),
+    color 0.3s var(--ease);
+}
+
+.pc-home[data-theme="dark"] {
+  --paper: #12343b;
+  --paper-deep: #0d262c;
+  --ink: #f3ead9;
+  --ink-soft: #b7c7c6;
+  --faint: #86a2a0;
+  --accent: #e1b382;
+  --accent-ink: #12343b;
+  --hair: rgba(225, 179, 130, 0.14);
+  --hair-strong: rgba(225, 179, 130, 0.3);
+  --shadow: rgba(0, 0, 0, 0.4);
+}
+
+.pc-home a {
+  color: var(--ink);
+}
+.pc-home ::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.pc-home .pch-navlink {
+  color: var(--faint);
+  transition: color 0.16s ease;
+}
+.pc-home .pch-navlink:hover {
+  color: var(--ink);
+}
+.pc-home .pch-trycta:hover {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  transform: translateY(-2px);
+}
+.pc-home .pch-hero-cta:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 34px var(--shadow);
+}
+.pc-home .pch-final-cta:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 16px 36px var(--shadow);
+}
+.pc-home .pch-play:hover {
+  transform: scale(1.08);
+}
+.pc-home .pch-footer-link:hover {
+  color: var(--ink) !important;
+}
+
+@keyframes pc-home-drift-a {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate(18px, -14px) rotate(6deg);
+  }
+}
+@keyframes pc-home-drift-b {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate(-14px, 16px) rotate(-5deg);
+  }
+}
+
+@media (max-width: 1279px) and (min-width: 900px) {
+  .pc-home [data-rid="hero"] {
+    padding: 130px 40px 80px !important;
+  }
+}
+@media (max-width: 899px) {
+  .pc-home [data-rid="nav-links"] {
+    display: none !important;
+  }
+  .pc-home [data-rid="hero"] {
+    padding: 110px 24px 56px !important;
+  }
+  .pc-home [data-reveal-id="demo"] {
+    padding: 0 24px 80px !important;
+  }
+  .pc-home [data-reveal-id^="step-"] > div {
+    grid-template-columns: 1fr !important;
+    gap: 36px !important;
+    padding: 60px 24px !important;
+  }
+  .pc-home [data-reveal-id^="step-"] > div > div {
+    order: unset !important;
+  }
+  .pc-home [data-reveal-id="diff"] {
+    padding: 64px 24px 32px !important;
+  }
+  .pc-home [data-rid="diff-grid-1"],
+  .pc-home [data-rid="diff-grid-3"] {
+    grid-template-columns: 1fr !important;
+    gap: 28px !important;
+  }
+  .pc-home [data-rid="diff-grid-3"] > div {
+    order: unset !important;
+  }
+  .pc-home [data-rid="diff-dark"] {
+    grid-template-columns: 1fr !important;
+    padding: 40px 26px !important;
+    margin: 0 0 48px !important;
+    gap: 28px !important;
+  }
+  .pc-home [data-reveal-id="final"] {
+    padding: 90px 24px 100px !important;
+  }
+  .pc-home [data-rid="footer"] {
+    flex-direction: column;
+    gap: 14px;
+    align-items: flex-start !important;
+  }
+}
+@media (max-width: 639px) {
+  .pc-home [data-rid="ratio-tiles"] {
+    flex-wrap: wrap !important;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pc-home *,
+  .pc-home *::before,
+  .pc-home *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
