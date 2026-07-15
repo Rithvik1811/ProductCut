@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from agents.hook_checker import MAX_SCORE, MIN_SCORE, score_hooks
+from agents.hook_checker import MAX_SCORE, MIN_SCORE, _build_system_prompt, score_hooks
 from tests._fakes import FakeOpenAIClient
 
 VARIANTS = [
@@ -102,3 +102,39 @@ async def test_empty_variant_list_returns_empty_without_calling_the_model():
 
     assert result == {}
     assert client.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Human-Centric Bias fix (video-gen-fidelity, 2026-07-11): product-conditional
+# human-moment scoring tiebreak. LLM scoring behavior can't be asserted
+# deterministically here, so these test the rendered rubric text (same posture
+# as the shot-list suite's system-prompt-content tests) and that the flag
+# plumbs through score_hooks.
+# ---------------------------------------------------------------------------
+
+
+def test_human_bias_tiebreak_rendered_only_when_flag_set():
+    with_bias = _build_system_prompt(human_use_bias=True)
+    without_bias = _build_system_prompt(human_use_bias=False)
+
+    assert "PRODUCT-SUITABILITY TIEBREAK" in with_bias
+    assert "This tiebreak NEVER" in with_bias
+    assert "PRODUCT-SUITABILITY TIEBREAK" not in without_bias
+
+
+def test_human_bias_block_keeps_score_down_rules_intact():
+    # The tiebreak must be additive: the flaw-led/sing-song SCORE DOWN
+    # calibration stays present in BOTH prompt variants.
+    for flag in (True, False):
+        prompt = _build_system_prompt(human_use_bias=flag)
+        assert "SCORE DOWN (2 max)" in prompt
+        assert "HUMAN-MOMENT PATH" in prompt
+
+
+@pytest.mark.asyncio
+async def test_score_hooks_accepts_human_bias_flag():
+    client = FakeOpenAIClient([_payload(GOOD_SCORES)])
+
+    result = await score_hooks(VARIANTS, client=client, human_use_bias=True)
+
+    assert set(result.keys()) == {"v1", "v2", "v3"}

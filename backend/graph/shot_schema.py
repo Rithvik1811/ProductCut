@@ -29,11 +29,46 @@ refactoring state.py, which is out of scope here -- state.py is C1's frozen
 contract). If C1's Shot literals change, update these to match and bump the
 version below.
 
-version: 1
+version: 4
+  - v2: Phase 2 research (docs/TECHNICAL_DOCUMENTATION.md SS5.6) added two
+        additive enum values ahead of the Shot-List Agent build: `rack_focus`
+        (CameraMove) and `product_in_hand` (ShotType). Both are structurally
+        hard to justify generically -- a rack focus requires naming two real
+        product referents on different focal planes, and product_in_hand
+        gives `demo`/`proof` beats a real human-interaction composition
+        instead of being forced into `lifestyle_context` or `macro_detail`.
+        This is the C3 freeze (docs/BUILD_TASKS.md, Phase 2, RR).
+  - v3: Phase 3 (agents/video_gen_node.py, KR) hands a shot off to the
+        Ken-Burns Fallback Node (SS5.9, RR) on a hard failure by setting a new
+        status and attaching a failure reason -- formalizing what KR's module
+        flagged as an unvalidated "known departure" pending a KR/RR sync
+        (docs/BUILD_TASKS.md Phase 3). "Frozen at end of Phase 2" means frozen
+        against RENAMING/REMOVING fields, same as C1 (graph/state.py) -- purely
+        additive extensions in a later phase are exactly what that policy
+        allows. Adds: ShotStatus += "fallback_requested" (distinct from the
+        existing "fallback" -- see graph/state.py's v6 note for why); new
+        FailureReasonModel and `ShotModel.failure_reason: Optional[...] = None`
+        (optional, not required, since only a handed-off shot carries one).
+  - v4: Video-gen creative-direction fix (video-gen-fidelity branch, RR) added
+        one more additive ShotType value ahead of a Shot-List Agent/Video-Gen
+        Node prompt-phrasing rework: `worn_in_use` (product worn/carried/
+        operated by a visible person at medium-to-wide framing, person moves,
+        product rides along). Distinct from `lifestyle_context`, which reverts
+        to its original, unambiguous meaning (a styled scene with NO human)
+        now that the human-carrying case has its own value -- the prior
+        overload was a live wiring risk: agents/video_gen_node.py keys its
+        empirically-proven human-safety positive clause
+        (docs/DERISK_VIDEO_GEN_RESULT.md SS6) off a specific shot_type set, so
+        a shot filed under the old dual-meaning `lifestyle_context` could
+        either skip that clause on a real human shot, or waste it on a
+        no-human scene. Also distinct from `product_in_hand` (a static/close
+        hand-contact composition) -- `worn_in_use` is the wider, person-in-
+        motion composition. No fields added/removed, purely an additive enum
+        value.
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,10 +76,12 @@ BeatRole = Literal["hook", "problem", "demo", "proof", "cta"]
 
 ShotType = Literal[
     "hook_hero", "macro_detail", "lifestyle_context",
-    "hero_reframe", "cta_endcard",
+    "hero_reframe", "cta_endcard", "product_in_hand", "worn_in_use",
 ]
 
-CameraMove = Literal["push_in", "orbit", "static", "pan", "tilt_up", "pull_back"]
+CameraMove = Literal[
+    "push_in", "orbit", "static", "pan", "tilt_up", "pull_back", "rack_focus",
+]
 
 Framing = Literal[
     "fills_frame", "rule_of_thirds_left", "rule_of_thirds_right", "context_wide",
@@ -52,7 +89,20 @@ Framing = Literal[
 
 TextOverlayZone = Literal["none", "left_third", "right_third", "lower_third"]
 
-ShotStatus = Literal["pending", "generating", "passed", "fallback", "review"]
+ShotStatus = Literal[
+    "pending", "generating", "passed", "fallback", "review", "fallback_requested",
+]
+
+FailureType = Literal["timeout", "api_error", "budget_exceeded"]
+
+
+class FailureReasonModel(BaseModel):
+    """Mirrors graph.state.FailureReason -- runtime-validated."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: FailureType
+    detail: str = Field(..., min_length=1)
 
 
 class ShotJustificationModel(BaseModel):
@@ -95,6 +145,7 @@ class ShotModel(BaseModel):
     justification: ShotJustificationModel
     status: ShotStatus
     retry_count: int = Field(..., ge=0)
+    failure_reason: Optional[FailureReasonModel] = None
 
 
 def validate_shot(raw: dict) -> ShotModel:
@@ -126,6 +177,8 @@ __all__ = [
     "Framing",
     "TextOverlayZone",
     "ShotStatus",
+    "FailureType",
+    "FailureReasonModel",
     "ShotJustificationModel",
     "ShotModel",
     "validate_shot",

@@ -23,7 +23,45 @@ Scope note: the Phase 0 scaffold in app/main.py also emits `run.started` /
 (`on_chain_start`, etc.). Those are transport/lifecycle scaffolding, NOT part of
 this frozen business-event contract, and are deliberately excluded here.
 
-version: 1
+version: 5
+  - v2: added "merge_validated" event type + MergeValidatedPayload (§5.4.7's
+        dashed `CV -.-> FE` streaming edge in the architecture diagram) so a
+        merge-candidate retry/fallback is visible on the live stream, not hidden.
+  - v3: ShotGeneratedPayload.status += "fallback_requested" (Phase 3, mirrors
+        graph.state.Shot.status v6 / graph.shot_schema.ShotStatus v3 -- see
+        state.py's v6 note for why this is distinct from the existing
+        "fallback" value). Formalizes what agents/video_gen_node.py (KR) flagged
+        as a self-invented, unconfirmed departure pending a KR/RR sync
+        (docs/BUILD_TASKS.md Phase 3).
+  - v4: added "vo_ready" event type + VoReadyPayload (Phase 5, §5.11's
+        `MC -> VOX` parallel branch -- the Voiceover + Caption Agent's own
+        live-stream signal, the VO analog of "shot_generated"). PROPOSED
+        ADDITIVE CHANGE, not confirmed against a body-side dashboard consumer
+        yet: no "vo_ready" (or equivalent) event existed before this agent
+        needed one (checked: the original 10 named events + v2's
+        "merge_validated" cover Ingest through Critic Chain, Treatment,
+        Shot-List, Budget, Video-Gen, drift, interrupt, edit-routing, and job
+        completion -- none of them fire when VO synthesis itself finishes).
+        Flagged here exactly like "fallback_requested" was in v3, pending a
+        sync with whoever builds the dashboard's VO panel; see
+        agents/voiceover_caption_agent.py's module docstring for the fuller
+        rationale.
+  - v5: added "master_cut_ready" event type + MasterCutReadyPayload (Phase 5,
+        §5.12's Assembly Agent -- the fan-in join of the voiceover branch and
+        the continuity retry loop, see graph/build.py's module docstring).
+        Fires once per job, only after both upstream branches have settled
+        (the Assembly node is registered `defer=True` in graph/build.py, so
+        -- unlike `interrupt_requested`'s documented double-fire across a
+        pause/resume cycle, continuity_gate.py's own KNOWN LIMITATION -- this
+        event fires exactly once, verified against a real compiled-graph
+        test). PROPOSED ADDITIVE CHANGE, same posture as v3's
+        "fallback_requested" and v4's "vo_ready": no event fired when the
+        finished master cut itself became available (the existing
+        `job_complete`/JobCompletePayload is Assembly+Export's COMBINED
+        signal per its own docstring, and Export, §5.13, is not built yet) --
+        flagged here, pending a sync with whoever builds the dashboard's
+        Assembly panel. `total_duration_sec` is the ffprobe'd (real, not
+        planned) duration of the finished mezzanine.
 """
 from __future__ import annotations
 
@@ -45,7 +83,8 @@ from graph.state import (
 )
 
 # ---------------------------------------------------------------------------
-# Envelope + the exact 10 event-type strings named in docs/BUILD_TASKS.md (C2).
+# Envelope + event-type strings. The original 10 are named in docs/BUILD_TASKS.md
+# (C2); "merge_validated" (v2) is an additive 11th, not part of that original list.
 # ---------------------------------------------------------------------------
 
 EventType = Literal[
@@ -59,6 +98,9 @@ EventType = Literal[
     "interrupt_requested",
     "edit_routed",
     "job_complete",
+    "merge_validated",
+    "vo_ready",
+    "master_cut_ready",
 ]
 
 
@@ -102,8 +144,10 @@ class ShotGeneratedPayload(TypedDict):
     """A single shot finished generation (real clip or Ken-Burns fallback)."""
     shot_id: str
     generated: GeneratedShot
-    # mirrors Shot.status in state.py (pending/generating/passed/fallback/review)
-    status: Literal["pending", "generating", "passed", "fallback", "review"]
+    # mirrors Shot.status in state.py (pending/generating/passed/fallback/review/fallback_requested)
+    status: Literal[
+        "pending", "generating", "passed", "fallback", "review", "fallback_requested",
+    ]
     is_fallback: bool  # True when routed to the Ken-Burns fallback node
 
 
@@ -135,6 +179,33 @@ class JobCompletePayload(TypedDict):
     voiceover: NotRequired[Voiceover]
 
 
+class MergeValidatedPayload(TypedDict):
+    """Merge Coherence Validator (5.4.7) scored a merge candidate -- the dashed
+    CV -.-> FE streaming edge. Fires once per attempt so a retry/fallback is part
+    of the visible live trace, not hidden."""
+    result: dict
+    attempt_number: int
+
+
+class VoReadyPayload(TypedDict):
+    """Voiceover + Caption Agent (5.11) finished synthesizing the VO audio track
+    and caption-timing JSON for the finalized winning_script -- fires once per
+    job on the `MC -> VOX` parallel branch, the VO analog of `shot_generated`."""
+    voiceover: Voiceover  # mirrors state.voiceover, C1
+    caption_count: int  # number of {text, start_ts, end_ts} caption entries produced
+    degraded: bool  # True when >=1 beat's TTS synthesis permanently failed (silent gap, captions-only for that beat)
+
+
+class MasterCutReadyPayload(TypedDict):
+    """Assembly Agent (5.12) finished stitching every real/fallback shot clip,
+    the voiceover audio, and the burned captions into one finished master-cut
+    MP4 -- fires once per job, after the Assembly fan-in join settles (see
+    graph/build.py's module docstring)."""
+    uri: str  # mirrors state.master_cut_uri, C1
+    shot_count: int  # number of REAL segments actually rendered (held-frame gaps don't add one)
+    total_duration_sec: float  # ffprobe'd (real, not planned) duration of the finished mezzanine
+
+
 EventPayload = Union[
     NodeStartedPayload,
     TruthExtractedPayload,
@@ -146,6 +217,9 @@ EventPayload = Union[
     InterruptRequestedPayload,
     EditRoutedPayload,
     JobCompletePayload,
+    MergeValidatedPayload,
+    VoReadyPayload,
+    MasterCutReadyPayload,
 ]
 
 
@@ -201,5 +275,8 @@ __all__ = [
     "InterruptRequestedPayload",
     "EditRoutedPayload",
     "JobCompletePayload",
+    "MergeValidatedPayload",
+    "VoReadyPayload",
+    "MasterCutReadyPayload",
     "build_event",
 ]

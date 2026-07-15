@@ -33,9 +33,14 @@ MAX_FACTS = 10
 MIN_VALID_FACTS_TO_SKIP_REPROMPT = 4
 
 # Categories are C1's, not this prompt's own vocabulary -- see module docstring.
+# "form_factor" (v8) is the one HOLISTIC whole-object anchor fact among an
+# otherwise all-micro-fact vocabulary -- see FORM-FACTOR ANCHOR note in
+# _build_system_prompt for why it exists (the Meta Quest -> "phone on a stand"
+# wrong-object bug).
 _CATEGORIES = (
     "color", "material", "texture",
     "construction_detail", "imperfection", "scale_cue", "brief_or_intake_fact",
+    "form_factor",
 )
 
 # Cheap heuristic for "generic enough to apply to any product" -- catches
@@ -61,13 +66,35 @@ contain facts about photo_1's product ONLY -- do not silently pick a subset
 of photos or blend facts from more than one item.
 
 STEP 2 -- only if same_product is true: extract {MIN_FACTS}-{MAX_FACTS} specific,
-non-generic facts about this exact product. Focus on: material, color,
-texture, distinguishing marks, size cues, and shape details.
+non-generic facts about this exact product. Focus on: COLOR, STYLE/SILHOUETTE,
+SIZE, and positive material/texture quality -- these are the sellable,
+positive features a viewer should come away knowing. These are the facts that
+make this exact item specific and desirable, not a generic listing photo.
+
+POSITIVE-ONLY, BY DEFAULT (mandatory): describe what the product IS and what
+makes it good -- never go hunting for scratches, scuffs, wear, damage, or
+other flaws. If a flaw is so obvious it fills the frame, you may note it, but
+do not seek it out, and do not let it crowd out the positive facts above --
+{MIN_FACTS}-{MAX_FACTS} facts should be overwhelmingly color/style/size/
+construction/material observations, not a defect inventory. Only actively look
+for wear/damage/imperfection detail if the seller's brief or freeform notes
+below explicitly ask for an authentic/well-loved/imperfection-forward angle --
+absent that, a flawless-reading product is the correct, desired outcome, not
+a gap to fill.
+
+De-emphasize logos/brand marks/debossed insignia specifically: a logo is a
+minor supporting detail, never the product's most important or most specific
+feature. Only note one if it is genuinely load-bearing for identifying this
+exact item (per the FORM-FACTOR ANCHOR below); do not let it crowd out color,
+style, size, and construction facts.
 
 Rules for each fact:
 - Every fact must be something a person could ONLY know by looking at THIS
-  specific item, not generic category knowledge (e.g. "hairline crack near
-  the handle base" is good, "this is a mug" is not).
+  specific item, not generic category knowledge (e.g. "a deep burgundy with a
+  matte, slightly waxy finish" is good, "this is a mug" is not) -- specific
+  does not mean negative; a precise color/style/size observation is exactly as
+  specific and checkable as a flaw, and is the preferred way to satisfy this
+  rule.
 - If you are not confident about a detail (e.g. small text you can't fully
   read), either omit it or explicitly flag it as uncertain -- never state a
   guess as a confirmed fact.
@@ -79,9 +106,35 @@ Rules for each fact:
   text on the product itself belong under "construction_detail", not
   "brief_or_intake_fact".
 - If you cannot find {MIN_FACTS} genuinely specific facts, look harder before giving up
-  -- check texture, reflections, wear patterns, proportions, and any text/logo
-  detail before settling for fewer.
+  -- check exact color/tone, silhouette, proportions, surface finish, and
+  distinguishing construction (stitching, hardware, closures) before settling
+  for fewer. Do not resort to hunting for wear/damage to hit the count.
 - Every fact must cite which photo it came from.
+
+FORM-FACTOR ANCHOR -- exactly ONE of your facts must use category "form_factor".
+This is a single sentence describing the ENTIRE product's physical gestalt,
+synthesized across ALL the photos, written so that a stranger could pick this
+exact object out of a lineup of unrelated products by shape alone. It must
+include, in roughly this order:
+  (1) the overall three-dimensional silhouette in plain shape words -- state
+      whether it is flat or deep, boxy or curved, and its rough proportions
+      (e.g. "a deep, rounded block, wider than it is tall, with a smoothly
+      curved front face"). Describe the shape you SEE; never say what kind of
+      product it is or what it is used for.
+  (2) approximate real-world size, stated observationally relative to a
+      familiar anchor visible or implied in the photos (e.g. "spans about two
+      hand-widths", "small enough to sit in one palm"). An estimate from
+      visual cues, not a spec-sheet number.
+  (3) the dominant color(s) and surface finish (matte/gloss/fabric/metal).
+  (4) how its major parts physically connect -- straps, hinges, cables,
+      handles, pads, detachable pieces -- and where they attach.
+Hard rules for this fact: no category or type words of any kind (never
+"headset", "device", "gadget", "wearable", "appliance"); describe only what
+IS present -- never contrast with other objects or say what it is NOT (do not
+write "not a phone"); one sentence, 30-60 words; list this fact FIRST in
+product_truths; set its "source" to the one photo showing the product alone
+and filling the frame most completely (prefer that photo over one with props/
+context, if you must choose).
 
 Return ONLY valid JSON in this exact shape, no preamble or commentary. The
 first two keys are REQUIRED in every response, even when there is no mismatch:
@@ -167,20 +220,86 @@ def _validate_and_filter(raw_truths: list[dict]) -> tuple[list[ProductTruth], li
     return valid, rejected
 
 
-def _reprompt_message(rejected: list[dict]) -> str:
-    """Name the exact violating facts so the re-prompt is targeted, not a generic retry."""
-    lines = [
-        f'- "{r.get("fact", "")}" (category={r.get("category")}) -- too generic or too short'
-        for r in rejected
-    ]
-    return (
-        "The following facts were rejected as too generic or too short "
-        f"(under 6 words, or a stock phrase like 'good quality'):\n"
-        + "\n".join(lines)
-        + "\n\nLook again at the photos and replace these with more specific, checkable "
-        "details (exact wear marks, precise color/texture, construction details). "
-        "Return the full corrected JSON object in the same shape."
+def _has_form_factor(facts: list[ProductTruth]) -> bool:
+    """Whether a valid "form_factor" anchor fact survived filtering (see the
+    FORM-FACTOR ANCHOR instructions in _build_system_prompt)."""
+    return any(f.get("category") == "form_factor" for f in facts)
+
+
+# Positive-Only Truths fix (docs/BUILD_TASKS.md "Script Quality (CTA Bridge) +
+# Positive-Only Truths..." workstream, Problem 1). Owner's words: "we mainly
+# need to still focus on only the positive factors, the vl model should not
+# capture the negatives at all like scratches and all." The prompt-level bias
+# above (POSITIVE-ONLY, BY DEFAULT) is not trusted alone -- same "prompt +
+# deterministic backstop" posture as every other gate in this codebase
+# (_rhyme_problems, _flaw_led_hook_problem, etc.): an "imperfection" fact is
+# dropped from the returned truths by default, full stop, UNLESS the seller's
+# own direction explicitly asks for an authentic/well-worn/character angle.
+# Category stays in the enum (real observational data that might genuinely
+# matter for that explicit ask -- BUILD_TASKS.md's own leaning) but the
+# default path downstream (Concept Agent, Budget Gate) never sees one unless
+# asked for.
+_IMPERFECTION_ANGLE_KEYWORDS = (
+    "authentic", "imperfect", "imperfection", "well-loved", "well loved",
+    "worn-in", "worn in", "lived-in", "lived in", "distressed", "patina",
+    "character", "vintage", "weathered", "broken-in", "broken in",
+)
+
+
+def _wants_imperfection_angle(brief: Optional[str], freeform: Optional[str]) -> bool:
+    """Crude keyword proxy (same posture as agents/_affordance.py) for "the
+    seller explicitly asked for an authentic/imperfection-forward angle" --
+    errs toward false negatives (missing an implied ask just means the
+    default positive-only behavior applies, the safe direction)."""
+    combined = f"{brief or ''} {freeform or ''}".lower()
+    return any(kw in combined for kw in _IMPERFECTION_ANGLE_KEYWORDS)
+
+
+def _filter_imperfection_by_default(
+    facts: list[ProductTruth], wants_imperfection: bool
+) -> list[ProductTruth]:
+    """Drop category="imperfection" facts unless the seller asked for that
+    angle (see module note above) -- the deterministic gate behind the
+    POSITIVE-ONLY, BY DEFAULT prompt rule."""
+    if wants_imperfection:
+        return facts
+    return [f for f in facts if f.get("category") != "imperfection"]
+
+
+def _reprompt_message(rejected: list[dict], missing_form_factor: bool = False) -> str:
+    """Name the exact violating facts so the re-prompt is targeted, not a generic retry.
+
+    `missing_form_factor=True` adds a targeted, distinct instruction naming that
+    specific failure -- a missing category is a different problem from a rejected
+    (too-generic/too-short) fact, so it gets its own clear call-out rather than
+    being folded into the generic "too generic" wording.
+    """
+    parts: list[str] = []
+    if missing_form_factor:
+        parts.append(
+            "You did NOT include a required \"form_factor\" fact at all. Exactly "
+            "one fact MUST have category=\"form_factor\": one 30-60 word sentence "
+            "describing the ENTIRE product's whole-object shape/silhouette, "
+            "approximate size, color/finish, and how its parts connect (see the "
+            "FORM-FACTOR ANCHOR instructions above). Add it now -- do not omit it "
+            "again."
+        )
+    if rejected:
+        lines = [
+            f'- "{r.get("fact", "")}" (category={r.get("category")}) -- too generic or too short'
+            for r in rejected
+        ]
+        parts.append(
+            "The following facts were rejected as too generic or too short "
+            "(under 6 words, or a stock phrase like 'good quality'):\n"
+            + "\n".join(lines)
+        )
+    parts.append(
+        "Look again at the photos and replace/add facts as needed with more specific, "
+        "checkable details (exact wear marks, precise color/texture, construction "
+        "details). Return the full corrected JSON object in the same shape."
     )
+    return "\n\n".join(parts)
 
 
 async def extract_product_truths(
@@ -237,24 +356,63 @@ async def extract_product_truths(
             # Deterministic backstop, not just a prompt instruction: don't trust
             # the model to have actually restricted itself to photo_1 -- the same
             # "don't trust self-report for something safety-relevant" lesson as
-            # the missing-field check above.
+            # the missing-field check above. Applied again to the retry's output
+            # below (v8's new form_factor trigger means a reprompt can now fire
+            # even when this mismatch backstop is the reason valid facts are few,
+            # so the retry path must re-apply the SAME backstop, not just the
+            # first pass).
             raw_truths = [t for t in raw_truths if t.get("source") == "photo_1"]
 
         valid, rejected = _validate_and_filter(raw_truths)
 
-        if len(valid) < MIN_VALID_FACTS_TO_SKIP_REPROMPT and rejected:
+        # Re-prompt on either of two independent triggers (§ v8): too few valid
+        # facts survived filtering, OR the required form_factor anchor is simply
+        # missing (a compliance failure distinct from "too generic" -- the model
+        # never attempted one at all).
+        missing_form_factor = not _has_form_factor(valid)
+        too_few_valid = len(valid) < MIN_VALID_FACTS_TO_SKIP_REPROMPT and bool(rejected)
+        if too_few_valid or missing_form_factor:
             logger.info(
-                "Product Truth Extractor: only %d valid facts, re-prompting once (%d rejected)",
-                len(valid), len(rejected),
+                "Product Truth Extractor: re-prompting once (valid=%d, rejected=%d, "
+                "missing_form_factor=%s)",
+                len(valid), len(rejected), missing_form_factor,
             )
             messages.append({"role": "assistant", "content": response_text})
-            messages.append({"role": "user", "content": _reprompt_message(rejected)})
+            messages.append(
+                {"role": "user", "content": _reprompt_message(rejected, missing_form_factor)}
+            )
             retry_text = await create_completion(client, model=model, messages=messages)
             retry_parsed = _parse_json_response(retry_text)
-            retry_valid, _ = _validate_and_filter(retry_parsed.get("product_truths", []))
+            retry_raw_truths = retry_parsed.get("product_truths", [])
+            if same_product is False:
+                # Same photo_1-only backstop as the first pass -- see the comment
+                # at the first application above.
+                retry_raw_truths = [t for t in retry_raw_truths if t.get("source") == "photo_1"]
+            retry_valid, _ = _validate_and_filter(retry_raw_truths)
             # Take the retry's facts only if it actually did better; never go backwards.
-            if len(retry_valid) > len(valid):
+            # For the missing-form_factor trigger specifically, "better" means the
+            # retry gained a valid form_factor fact the original didn't have, even
+            # if the total count is only similar -- the anchor mattering more than
+            # raw count is the whole point of this trigger.
+            gained_form_factor = (
+                missing_form_factor and _has_form_factor(retry_valid) and not _has_form_factor(valid)
+            )
+            if gained_form_factor or len(retry_valid) > len(valid):
                 valid = retry_valid
+
+        # Positive-Only Truths fix -- applied AFTER the re-prompt/retry decision
+        # above (which must judge the model's genuine compliance, unaffected by
+        # this filter) and BEFORE the count warnings/MAX_FACTS truncation below
+        # (which should reflect what's actually being returned downstream).
+        wants_imperfection = _wants_imperfection_angle(brief, freeform)
+        before_filter = len(valid)
+        valid = _filter_imperfection_by_default(valid, wants_imperfection)
+        if len(valid) < before_filter:
+            logger.info(
+                "Product Truth Extractor: dropped %d imperfection-category fact(s) "
+                "by default (positive-only truths) -- seller_direction did not ask "
+                "for an authentic/imperfection angle.", before_filter - len(valid),
+            )
 
         if len(valid) < MIN_VALID_FACTS_TO_SKIP_REPROMPT:
             logger.warning(
@@ -262,12 +420,28 @@ async def extract_product_truths(
                 "(spec wants %d-%d) -- flag in reasoning trace, do not block the job.",
                 len(valid), MIN_FACTS, MAX_FACTS,
             )
+        if not _has_form_factor(valid):
+            logger.warning(
+                "Product Truth Extractor: proceeding with NO form_factor anchor fact "
+                "after the bounded re-prompt -- the Video-Gen Node's Subject line will "
+                "fall back to its per-shot micro-fact only (see video_gen_node.py "
+                "_build_prompt), which is exactly the under-specified-subject failure "
+                "mode this category exists to prevent."
+            )
         if len(valid) > MAX_FACTS:
             logger.info(
                 "Product Truth Extractor: model returned %d facts, truncating to the "
                 "spec's cap of %d.", len(valid), MAX_FACTS,
             )
-            valid = valid[:MAX_FACTS]
+            # form_factor-aware truncation: the anchor must never be silently
+            # dropped just because the model listed it last -- partition it out,
+            # keep it unconditionally, and only truncate the rest.
+            ff_fact = next((f for f in valid if f["category"] == "form_factor"), None)
+            if ff_fact is not None:
+                rest = [f for f in valid if f is not ff_fact]
+                valid = [ff_fact] + rest[: MAX_FACTS - 1]
+            else:
+                valid = valid[:MAX_FACTS]
         return valid
     finally:
         if own_client:

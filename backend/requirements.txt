@@ -38,6 +38,10 @@ Pillow>=11.1.0               # product photo preprocessing/validation before Tru
 httpx>=0.28.1
 tenacity>=9.0.0              # retry/backoff for Qwen and video-gen API calls
 
+# --- Text/NLP utilities ---------------------------------------------------------
+pronouncing>=0.2.0           # CMU Pronouncing Dictionary wrapper; deterministic anti-rhyme
+                              # check in agents/concept_agent.py (video-gen-fidelity Backstory-First fix)
+
 # --- Config / dev ---------------------------------------------------------------
 python-dotenv>=1.0.1
 

@@ -9,9 +9,9 @@ Timing correctness is arithmetic, not judgment -- an LLM would be a strictly
 worse choice here, per the spec's own reasoning.
 
 Output shape mirrors Hook-Checker's: {variant_id: {pacing_score, violations}},
-a lightweight per-variant result Meta-Critic (RR's task, not built yet) will
-merge into the real C1 CriticScore. NOT wired into graph/build.py yet, same
-reason as hook_checker.py -- no Meta-Critic exists to consume it.
+a lightweight per-variant result Meta-Critic merges into the real C1
+CriticScore. WIRED into graph/build.py, same fan-out/fan-in as
+hook_checker.py.
 
 pacing_score formula (this module's own design -- the spec specifies what to
 check, not how to score it): starts at 5, loses 1 point per violation found,
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from graph.state import ScriptVariant
+from graph.state import ProductCutState, ScriptVariant
 
 MIN_SCORE = 1
 MAX_SCORE = 5
@@ -100,3 +100,9 @@ def check_pacing(variant: ScriptVariant) -> PacingResult:
 def check_pacing_all(script_variants: list[ScriptVariant]) -> dict[str, PacingResult]:
     """Batch form, matching Hook-Checker's {variant_id: result} shape."""
     return {v["variant_id"]: check_pacing(v) for v in script_variants}
+
+
+async def pacing_checker_node(state: ProductCutState) -> dict:
+    """LangGraph node wrapper: deterministic timing check for each variant. Sync/pure, no I/O — runs in parallel with the other 4 checkers."""
+    scores = check_pacing_all(state["script_variants"])
+    return {"pacing_scores": scores}
