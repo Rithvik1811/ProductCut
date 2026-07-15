@@ -240,6 +240,23 @@ def persist_remote_video_to_oss(
                 pass
 
 
+def upload_export_to_oss(
+    local_path: str,
+    job_id: str,
+    filename: str,
+    *,
+    bucket: Optional[object] = None,
+) -> str:
+    """Upload one format-export MP4 to the job's exports namespace.
+
+    `filename` should include the subfolder, e.g. "exports/9x16.mp4". Keyed
+    via `oss_job_asset_key` (one export per ratio per job, not per shot).
+    First caller: agents/format_export_node.py.
+    """
+    key = oss_job_asset_key(job_id, filename)
+    return _put_and_sign(key, local_path, "video/mp4", bucket=bucket)
+
+
 __all__ = [
     "SIGNED_URL_TTL_SEC",
     "oss_object_key",
@@ -247,6 +264,7 @@ __all__ = [
     "upload_video_to_oss",
     "upload_audio_to_oss",
     "upload_master_cut_to_oss",
+    "upload_export_to_oss",
     "upload_json_to_oss",
     "persist_remote_video_to_oss",
 ]

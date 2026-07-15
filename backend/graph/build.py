@@ -119,6 +119,7 @@ from agents.shot_list_agent import shot_list_agent_node
 from agents.treatment_agent import treatment_agent_node
 from agents.visual_direction_agent import visual_direction_agent_node
 from agents.video_gen_node import video_gen_node
+from agents.format_export_node import format_export_node
 from agents.voiceover_caption_agent import voiceover_caption_agent_node
 from graph.state import ProductCutState
 
@@ -181,8 +182,10 @@ def _build_uncompiled() -> StateGraph:
     # (not merely a style choice) and how it was verified against a real
     # compiled-graph test.
     builder.add_node("assembly_agent", assembly_agent_node, defer=True)
+    builder.add_node("format_export_node", format_export_node)
     builder.add_edge("voiceover_caption_agent", "assembly_agent")
-    builder.add_edge("assembly_agent", END)
+    builder.add_edge("assembly_agent", "format_export_node")
+    builder.add_edge("format_export_node", END)
     builder.add_edge("treatment_agent", "shot_list_agent")
     builder.add_edge("shot_list_agent", "budget_gate")
     builder.add_edge("budget_gate", "video_gen")
