@@ -352,6 +352,9 @@ class ProductCutState(TypedDict, total=False):
     brief: str
     product_photos: list[str]
     seller_direction: SellerDirection
+    brand_name: NotRequired[str]      # e.g. "Hydro Flask" — used in CTA and tone
+    brand_url: NotRequired[str]       # e.g. "https://hydroflask.com" — fetched by brand_research_node
+    brand_context: NotRequired[str]   # LLM-summarized brand identity from brand_url
 
     # populated by Phase 1 (Product Truth Extractor, Concept Agent, Critic Chain)
     product_truths: list[ProductTruth]

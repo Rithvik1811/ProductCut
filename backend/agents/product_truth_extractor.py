@@ -208,9 +208,28 @@ def _parse_json_response(raw: str) -> dict:
     return json.loads(stripped)
 
 
-def _is_generic(fact: str) -> bool:
-    """Cheap reject heuristic: too short, or matches a known generic phrase."""
-    if len(fact.split()) < 6:
+_HALLUCINATION_PHRASES = (
+    "i cannot see", "i can't see", "unable to determine", "unable to see",
+    "cannot determine", "can't determine", "appears to be", "seems to be",
+    "i think", "i believe", "possibly", "not visible", "not clear",
+    "hard to tell", "difficult to tell", "unclear", "not sure",
+)
+
+
+def _is_hallucination(fact: str) -> bool:
+    """Drop facts where the model signals it couldn't actually observe the detail."""
+    lowered = fact.lower()
+    return any(phrase in lowered for phrase in _HALLUCINATION_PHRASES)
+
+
+def _is_generic(fact: str, category: str = "") -> bool:
+    """Cheap reject heuristic: too short, or matches a known generic phrase.
+
+    form_factor is a structural anchor — short but specific facts (e.g. "compact
+    12-inch frying pan") are valid, so the minimum word count is lower for it.
+    """
+    min_words = 3 if category == "form_factor" else 6
+    if len(fact.split()) < min_words:
         return True
     lowered = fact.lower()
     return any(phrase in lowered for phrase in _GENERIC_STOPLIST)
@@ -223,7 +242,7 @@ def _validate_and_filter(raw_truths: list[dict]) -> tuple[list[ProductTruth], li
     for entry in raw_truths:
         fact = entry.get("fact", "")
         category = entry.get("category")
-        if category not in _CATEGORIES or not fact or _is_generic(fact):
+        if category not in _CATEGORIES or not fact or _is_generic(fact, category) or _is_hallucination(fact):
             rejected.append(entry)
             continue
         valid.append(
@@ -313,8 +332,9 @@ def _reprompt_message(rejected: list[dict], missing_form_factor: bool = False) -
         )
     parts.append(
         "Look again at the photos and replace/add facts as needed with more specific, "
-        "checkable details (exact wear marks, precise color/texture, construction "
-        "details). Return the full corrected JSON object in the same shape."
+        "checkable details (precise color/texture, construction details, observable "
+        "measurements or proportions). Return the full corrected JSON object in the "
+        "same shape."
     )
     return "\n\n".join(parts)
 

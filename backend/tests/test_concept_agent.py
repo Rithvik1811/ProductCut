@@ -1175,3 +1175,54 @@ def test_abrupt_cta_backstop_fires_through_validate_variant():
     assert any("disconnected command" in p for p in problems), (
         f"expected the abrupt-CTA backstop to fire, got: {problems}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _missing_required_tiers: conditional tier validation — added 2026-07-15.
+# ---------------------------------------------------------------------------
+
+def test_missing_required_tiers_does_not_report_tier1_when_no_tier1_exists():
+    """Tier 1 (form_factor) must not fire when the truth table has no form_factor truths."""
+    from agents.concept_agent import _missing_required_tiers
+    truths_by_id = {
+        "t1": {"category": "color", "fact": "deep matte navy"},
+        "t2": {"category": "construction_detail", "fact": "double-stitched reinforced seams at stress points"},
+    }
+    variant = {"grounding_truth_ids": ["t1"]}  # cites color only
+    problems = _missing_required_tiers(variant, truths_by_id)
+    assert not any("TIER 1" in p for p in problems), (
+        "Tier 1 should not be required when no form_factor truth exists in the table"
+    )
+
+
+def test_missing_required_tiers_reports_all_three_when_all_tiers_present_but_none_cited():
+    """All tiers present in table but variant cites none → all 3 fire."""
+    from agents.concept_agent import _missing_required_tiers
+    truths_by_id = {
+        "t1": {"category": "form_factor", "fact": "compact 1-litre flask with matte finish and screw cap"},
+        "t2": {"category": "color", "fact": "midnight-blue powder coat"},
+        "t3": {"category": "construction_detail", "fact": "double-wall vacuum insulation with laser-welded seam"},
+    }
+    variant = {"grounding_truth_ids": []}  # cites nothing
+    problems = _missing_required_tiers(variant, truths_by_id)
+    assert any("TIER 1" in p for p in problems)
+    assert any("TIER 2" in p for p in problems)
+    assert any("TIER 3" in p for p in problems)
+
+
+def test_missing_required_tiers_reports_nothing_when_only_brief_or_intake_fact():
+    """Truth table with only brief_or_intake_fact: no tier categories exist, so no tier fires."""
+    from agents.concept_agent import _missing_required_tiers
+    truths_by_id = {
+        "t1": {"category": "brief_or_intake_fact", "fact": "minimal packaging, ships plastic-free in recycled cardboard"},
+        "t2": {"category": "brief_or_intake_fact", "fact": "certified B-Corp, 1% donated to reforestation per sale"},
+    }
+    variant = {"grounding_truth_ids": ["t1", "t2"]}
+    problems = _missing_required_tiers(variant, truths_by_id)
+    assert problems == [], f"No tier should fire when no tier categories exist: {problems}"
+
+
+def test_specific_categories_includes_brief_or_intake_fact():
+    """brief_or_intake_fact must be in SPECIFIC_CATEGORIES as a valid fallback."""
+    from agents.concept_agent import SPECIFIC_CATEGORIES
+    assert "brief_or_intake_fact" in SPECIFIC_CATEGORIES

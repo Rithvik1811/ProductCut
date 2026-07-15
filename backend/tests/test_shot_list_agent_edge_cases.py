@@ -14,10 +14,11 @@ string served by `tests._fakes.FakeOpenAIClient`, exactly like the existing
 suite. The autouse `_fake_dashscope_env` fixture in conftest.py supplies the
 env vars `generate_shot_list` reads.
 
-ONE test is intentionally RED: `test_BUG_lossy_call_a_reprompt_drops_valid_shots`
-demonstrates a confirmed data-loss defect (see its docstring and the report).
-It asserts the spec-correct behavior and is left failing on purpose rather than
-weakened to stay green.
+`test_BUG_lossy_call_a_reprompt_drops_valid_shots` was a confirmed data-loss
+defect (the re-prompt replaced the entire justification list instead of merging
+by shot_id). The fix was applied in shot_list_agent.py (merge-by-shot-id logic,
+lines 1192-1205) and the test is now GREEN. The docstring inside the test is
+left for historical context but the xfail label has been removed.
 """
 from __future__ import annotations
 
@@ -268,22 +269,16 @@ async def test_reprompt_returning_non_json_raises_jsondecodeerror():
 
 
 def test_BUG_lossy_call_a_reprompt_drops_valid_shots():
-    """CONFIRMED BUG (intentionally RED) -- data loss on a lossy re-prompt.
+    """Regression: valid shots from Call A must survive a lossy re-prompt.
 
-    Spec §5.6 defines a PER-SHOT re-prompt + PER-SHOT fallback: a shot that was
-    already valid on the first Call A must never be discarded by the retry. The
-    sibling concept_agent enforces exactly this via `if len(retry_valid) >
-    len(valid): valid = retry_valid` -- it only ADOPTS a retry that is at least
-    as good.
+    Spec §5.6: a shot already valid on the first Call A must never be discarded
+    by the retry. Previously `generate_shot_list` replaced the WHOLE list on any
+    failure (`if retry_justifications: justifications = retry_justifications`),
+    dropping s1/s3 when the re-prompt returned only the fixed s2.
 
-    `generate_shot_list` has NO such guard: on any failure it does
-    `if retry_justifications: justifications = retry_justifications`, replacing
-    the WHOLE list. So when the re-prompt returns only the one corrected shot
-    (a very common model behavior -- "here is the fixed shot"), the two
-    originally-VALID shots (s1, s3) are silently dropped.
-
-    This asserts the spec-correct outcome (originally-valid shots survive) and
-    is left FAILING on purpose to surface the defect. See report.
+    Fixed via merge-by-shot-id (shot_list_agent.py lines 1192-1205): only
+    originally-failing shot_ids are swapped for the retry's entry; all
+    already-valid shots are kept untouched.
     """
     async def run():
         bad = [
@@ -1039,3 +1034,49 @@ async def test_end_to_end_opening_shot_defaults_to_lifestyle_context_for_person_
 
     s1 = next(s for s in shots if s["shot_id"] == "s1")
     assert s1["shot_type"] == "lifestyle_context"
+
+
+# ===========================================================================
+# 13. Phone-product conditional negative prompt — added 2026-07-15.
+# ===========================================================================
+
+def test_is_phone_product_true():
+    from agents.shot_list_agent import _is_phone_product
+    truths = [{"category": "form_factor", "fact": "smartphone with 6.1-inch OLED display and aluminium frame"}]
+    assert _is_phone_product(truths) is True
+
+
+def test_is_phone_product_false():
+    from agents.shot_list_agent import _is_phone_product
+    truths = [{"category": "form_factor", "fact": "stainless steel water bottle, 32 oz, double-wall vacuum insulated"}]
+    assert _is_phone_product(truths) is False
+
+
+def test_is_phone_product_empty_truths():
+    from agents.shot_list_agent import _is_phone_product
+    assert _is_phone_product([]) is False
+    assert _is_phone_product(None) is False
+
+
+def test_negative_prompt_excludes_phone_terms_for_phone_product():
+    from agents.shot_list_agent import _build_negative_prompt
+    truths = [{"category": "form_factor", "fact": "android smartphone with glass back and metal rails"}]
+    np = _build_negative_prompt(truths)
+    assert "smartphone" not in np
+    assert "phone on a stand" not in np
+
+
+def test_negative_prompt_includes_phone_terms_for_non_phone():
+    from agents.shot_list_agent import _build_negative_prompt
+    truths = [{"category": "form_factor", "fact": "cast-iron skillet with helper handle, 10-inch diameter"}]
+    np = _build_negative_prompt(truths)
+    assert "smartphone" in np
+    assert "phone on a stand" in np
+
+
+def test_negative_prompt_with_extra_appended():
+    from agents.shot_list_agent import _build_negative_prompt
+    truths = [{"category": "form_factor", "fact": "ceramic mug with wide rounded base"}]
+    np = _build_negative_prompt(truths, extra="blurry background")
+    assert "blurry background" in np
+    assert "smartphone" in np

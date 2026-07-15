@@ -48,3 +48,47 @@ def test_plain_still_life_product_has_no_affordance():
 def test_empty_and_missing_truths_are_false():
     assert human_use_suits_product([]) is False
     assert human_use_suits_product(None) is False
+
+
+# ---------------------------------------------------------------------------
+# Kitchen/hand-use goods — added 2026-07-15.
+# ---------------------------------------------------------------------------
+
+def test_pan_fact_establishes_human_use_affordance():
+    truths = [_truth("compact cast-iron pan with helper handle", category="form_factor")]
+    assert human_use_suits_product(truths) is True
+
+
+def test_knife_fact_establishes_human_use_affordance():
+    truths = [_truth("8-inch chef's knife with full-tang blade and riveted handle")]
+    assert human_use_suits_product(truths) is True
+
+
+def test_cutting_board_fact_establishes_affordance():
+    truths = [_truth("end-grain walnut cutting board with rubber feet", category="form_factor")]
+    assert human_use_suits_product(truths) is True
+
+
+def test_whisk_establishes_affordance():
+    truths = [_truth("stainless steel balloon whisk with silicone-grip handle")]
+    assert human_use_suits_product(truths) is True
+
+
+def test_held_in_scale_fact_establishes_affordance():
+    """Action verb 'held' in a scale_cue fact triggers body-scale check."""
+    truths = [_truth("easily held in one hand during pouring", category="scale_cue")]
+    assert human_use_suits_product(truths) is True
+
+
+def test_poured_in_form_factor_establishes_affordance():
+    truths = [_truth("32-oz pitcher poured directly over ice without dripping", category="form_factor")]
+    assert human_use_suits_product(truths) is True
+
+
+def test_decorative_vase_has_no_affordance():
+    """A decorative product with no carry/contact parts returns False."""
+    truths = [
+        _truth("tall cylindrical ceramic vase with blue glaze finish", category="form_factor"),
+        _truth("matte cobalt blue exterior with glossy interior", category="color"),
+    ]
+    assert human_use_suits_product(truths) is False

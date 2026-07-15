@@ -52,7 +52,10 @@ MAX_HOOK_WORDS = 10
 # this set to "construction_detail" alone (now that imperfection can no longer
 # backstop it) would risk making every variant structurally unvalidatable for
 # a product with zero construction_detail facts.
-SPECIFIC_CATEGORIES = frozenset({"construction_detail", "material_character", "texture", "form_factor"})
+SPECIFIC_CATEGORIES = frozenset({
+    "construction_detail", "material_character", "texture", "form_factor",
+    "brief_or_intake_fact",  # general-purpose fallback; valid when no physical categories exist
+})
 
 _TIER1_CATEGORIES = frozenset({"form_factor"})
 _TIER2_CATEGORIES = frozenset({"color", "material", "texture"})
@@ -149,7 +152,24 @@ def _format_truths(truths: list[ProductTruth]) -> str:
     return "\n".join(f"- [{t['truth_id']}] ({t['category']}) {t['fact']}" for t in truths)
 
 
-def _build_system_prompt(target_length_sec: int, human_use_suits: bool = False) -> str:
+def _brand_identity_block(brand_name: str, brand_context: str) -> str:
+    if not brand_name and not brand_context:
+        return ""
+    lines = ["BRAND IDENTITY (mandatory — write for this specific brand):"]
+    if brand_name:
+        lines.append(
+            f"- Brand name: {brand_name}. The CTA beat MUST naturally name the brand. "
+            f"NEVER write a generic CTA like \"Get yours\" or \"Order now\" when the brand is known. "
+            f"Instead use something like: \"Get your {brand_name}.\" / \"Shop {brand_name} today.\" / "
+            f"\"That's what {brand_name} is built for.\" — any natural phrasing that lands the name."
+        )
+    if brand_context:
+        lines.append(f"- Brand context (match tone, positioning, and vocabulary to this):\n  {brand_context}")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _build_system_prompt(target_length_sec: int, human_use_suits: bool = False, brand_name: str = "", brand_context: str = "") -> str:
     # human_use_suits is preserved as a parameter for future callers/analytics
     # (e.g. the Visual Direction Agent uses the same affordance signal), but no
     # longer changes the VO prompt itself -- the VO FOCUS MANDATE below applies
@@ -492,7 +512,7 @@ This replaces any third-person pronoun story: the viewer is the protagonist, not
 If seller_direction includes "never_do" constraints, do not violate them in
 any variant. If mood words are present, let them bias framework/tone choice.
 
-Return ONLY valid JSON in this exact shape, no preamble or commentary:
+{_brand_identity_block(brand_name, brand_context)}Return ONLY valid JSON in this exact shape, no preamble or commentary:
 
 {{
   "script_variants": [
@@ -517,8 +537,15 @@ def _build_user_content(
     brief: str,
     product_truths: list[ProductTruth],
     seller_direction: Optional[dict],
+    brand_name: str = "",
+    brand_context: str = "",
 ) -> str:
-    parts = [f"Seller's one-line brief: {brief}", "", "Product truths:", _format_truths(product_truths)]
+    parts = []
+    if brand_name:
+        parts.append(f"Brand: {brand_name}")
+    parts += [f"Seller's one-line brief: {brief}", "", "Product truths:", _format_truths(product_truths)]
+    if brand_context:
+        parts += ["", "Brand context:", brand_context]
     if seller_direction:
         parts.append("")
         parts.append("Seller direction:")
@@ -917,18 +944,22 @@ def _rhyme_key(word: str) -> Optional[str]:
 def _missing_required_tiers(variant: dict, truths_by_id: dict) -> list[str]:
     cited_ids = set(variant.get("grounding_truth_ids", []))
     cited_cats = {truths_by_id[tid]["category"] for tid in cited_ids if tid in truths_by_id}
+    all_cats = {t["category"] for t in truths_by_id.values()}
     problems = []
-    if not cited_cats & _TIER1_CATEGORIES:
+    # Only require a tier if at least one truth of that tier's categories exists in
+    # the full truth table. A tier that was never extracted can't be cited — don't
+    # penalize variants for truths the VL model couldn't find.
+    if all_cats & _TIER1_CATEGORIES and not cited_cats & _TIER1_CATEGORIES:
         problems.append(
             "Missing TIER 1 (form_factor): script never establishes what the product IS "
             "physically — add a truth that anchors its shape, size, and overall form."
         )
-    if not cited_cats & _TIER2_CATEGORIES:
+    if all_cats & _TIER2_CATEGORIES and not cited_cats & _TIER2_CATEGORIES:
         problems.append(
             "Missing TIER 2 (color/material/texture): script never grounds why the product "
             "feels premium — add a truth about its material or surface quality."
         )
-    if not cited_cats & _TIER3_CATEGORIES:
+    if all_cats & _TIER3_CATEGORIES and not cited_cats & _TIER3_CATEGORIES:
         problems.append(
             "Missing TIER 3 (construction_detail/material_character): script has no "
             "idiosyncratic differentiator — add a truth about what makes THIS specific product "
@@ -1254,6 +1285,8 @@ async def generate_script_variants(
     seller_direction: Optional[dict] = None,
     target_length_sec: int = DEFAULT_TARGET_LENGTH_SEC,
     client: Optional[AsyncOpenAI] = None,
+    brand_name: str = "",
+    brand_context: str = "",
 ) -> list[ScriptVariant]:
     """Run the Concept Agent: one Qwen-Max call, one bounded re-prompt on failure.
 
@@ -1290,8 +1323,8 @@ async def generate_script_variants(
 
     try:
         messages = [
-            {"role": "system", "content": _build_system_prompt(target_length_sec, human_bias)},
-            {"role": "user", "content": _build_user_content(brief, product_truths, seller_direction)},
+            {"role": "system", "content": _build_system_prompt(target_length_sec, human_bias, brand_name, brand_context)},
+            {"role": "user", "content": _build_user_content(brief, product_truths, seller_direction, brand_name, brand_context)},
         ]
 
         response_text = await create_completion(client, model=model, messages=messages, enable_thinking=True)
@@ -1349,6 +1382,8 @@ async def concept_agent_node(state: ProductCutState) -> dict:
         brief=state["brief"],
         product_truths=state.get("product_truths", []),
         seller_direction=state.get("seller_direction"),
+        brand_name=state.get("brand_name", ""),
+        brand_context=state.get("brand_context", ""),
     )
     trace_note = f"\n[concept_agent] produced {len(variants)} script variant(s)."
     if len(variants) == 1:

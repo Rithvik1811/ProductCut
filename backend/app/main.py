@@ -22,7 +22,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, get_args
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 
 from graph.build import build_graph
 from graph.events import EventType, build_event
@@ -80,12 +80,26 @@ async def health() -> dict:
 
 
 @app.websocket("/ws/{job_id}")
-async def ws_run(websocket: WebSocket, job_id: str) -> None:
-    """Run the bare graph for `job_id` and stream each event to the client."""
+async def ws_run(
+    websocket: WebSocket,
+    job_id: str,
+    brand_name: str = Query(default=""),
+    brand_url: str = Query(default=""),
+) -> None:
+    """Run the graph for `job_id` and stream each event to the client.
+
+    Optional query params:
+      ?brand_name=HydroFlask   — included in CTA and tone
+      ?brand_url=https://...   — fetched by brand_research_node for full context
+    """
     await websocket.accept()
     graph = websocket.app.state.graph
     config = {"configurable": {"thread_id": job_id}}
-    initial_state = {"job_id": job_id}
+    initial_state: dict = {"job_id": job_id}
+    if brand_name:
+        initial_state["brand_name"] = brand_name
+    if brand_url:
+        initial_state["brand_url"] = brand_url
 
     try:
         await websocket.send_json(

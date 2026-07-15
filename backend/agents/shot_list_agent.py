@@ -178,9 +178,34 @@ NEGATIVE_PROMPT_BOILERPLATE = (
     # every conceivable wrong object (that would burn char budget legitimate
     # per-shot negative terms need) -- just the one empirically observed
     # attractor plus one generic-but-concrete substitution phrase.
-    ", object substitution, product transforming into a different object, "
-    "smartphone, phone on a stand"
+    ", object substitution, product transforming into a different object"
 )
+
+# Phone-related wrong-object terms are only safe to use as negatives when the
+# product itself is NOT phone-related. A phone case, phone stand, or any other
+# phone accessory would be hurt by these terms (the main product IS a phone
+# or phone-adjacent object). Added conditionally via _build_negative_prompt.
+_PHONE_WORDS = frozenset({"phone", "smartphone", "iphone", "android", "mobile"})
+
+
+def _is_phone_product(product_truths: list) -> bool:
+    """True if any form_factor/scale_cue/brief_or_intake_fact mentions phone words."""
+    for t in product_truths or []:
+        if t.get("category") in ("form_factor", "scale_cue", "brief_or_intake_fact"):
+            words = set(t.get("fact", "").lower().split())
+            if words & _PHONE_WORDS:
+                return True
+    return False
+
+
+def _build_negative_prompt(product_truths: list = None, extra: str = "") -> str:
+    """Build the full negative prompt, appending phone-attractor terms only for non-phone products."""
+    parts = [NEGATIVE_PROMPT_BOILERPLATE]
+    if not _is_phone_product(product_truths):
+        parts.append(", smartphone, phone on a stand")
+    if extra:
+        parts.append(f", {extra}")
+    return "".join(parts)
 
 # shot_type values naming the human-interaction composition (C3 v4 addition of
 # "worn_in_use" alongside the existing "product_in_hand"). Hand-kept in sync
@@ -1037,7 +1062,7 @@ def _assemble_shots(
             if not is_hero:
                 extra_parts.append(NON_HERO_HUMAN_SHOT_NEGATIVE_EXTRA)
         extra = ", ".join(extra_parts)
-        negative_prompt = f"{NEGATIVE_PROMPT_BOILERPLATE}, {extra}" if extra else NEGATIVE_PROMPT_BOILERPLATE
+        negative_prompt = _build_negative_prompt(list(truths_by_id.values()), extra=extra)
         # The hosted API truncates negative_prompt at 500 chars server-side. We
         # never truncate it ourselves -- flag it so a shot's specific extra risk
         # terms silently lost to server-side truncation are at least visible in

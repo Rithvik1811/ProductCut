@@ -17,6 +17,7 @@ import pytest
 from agents.shot_list_agent import (
     HUMAN_INTERACTION_SHOT_TYPES,
     NEGATIVE_PROMPT_BOILERPLATE,
+    _build_negative_prompt,
     _default_validate_justifications,
     _truth_diversity_failures,
     generate_shot_list,
@@ -138,8 +139,10 @@ async def test_happy_path_produces_valid_shot_list():
     assert shots[0]["justification"]["truth_fact_id"] == "t1"
     # reference_image_id follows the cited truth's photo (t2 came from photo_2)
     assert shots[1]["reference_image_id"] == "photo_2"
-    # shared identity-first negative prompt applied, per-shot extra appended
-    assert shots[0]["negative_prompt"] == NEGATIVE_PROMPT_BOILERPLATE
+    # shared identity-first negative prompt applied, per-shot extra appended.
+    # phone-attractor terms are appended for non-phone products (bag truths here).
+    assert shots[0]["negative_prompt"].startswith(NEGATIVE_PROMPT_BOILERPLATE)
+    assert "smartphone" in shots[0]["negative_prompt"]
     assert shots[1]["negative_prompt"].startswith(NEGATIVE_PROMPT_BOILERPLATE)
     assert "smudged brass" in shots[1]["negative_prompt"]
     # allocated_budget is the explicit placeholder the Budget Gate overwrites
@@ -152,12 +155,18 @@ async def test_happy_path_produces_valid_shot_list():
 
 
 def test_negative_prompt_boilerplate_includes_v8_object_substitution_terms():
-    """v8 fix (Meta Quest -> "phone on a stand" wrong-object bug): the empirically
-    observed failure mode's specific tokens must be present, appended (not
-    replacing) the original identity-first terms, which must stay first."""
+    """v8 fix: object-substitution terms are in NEGATIVE_PROMPT_BOILERPLATE.
+    Phone-attractor terms (smartphone/phone on a stand) are now conditional —
+    appended by _build_negative_prompt only for non-phone products, so they
+    don't appear in the shared constant but DO appear in the assembled prompt."""
     assert NEGATIVE_PROMPT_BOILERPLATE.startswith("warped label, distorted logo")
-    for term in ("object substitution", "different object", "smartphone", "phone on a stand"):
+    for term in ("object substitution", "different object"):
         assert term in NEGATIVE_PROMPT_BOILERPLATE
+    # Phone terms must appear in the assembled prompt for a non-phone product.
+    non_phone_truths = [{"category": "form_factor", "fact": "ceramic mug with wide rounded base"}]
+    assembled = _build_negative_prompt(non_phone_truths)
+    for term in ("smartphone", "phone on a stand"):
+        assert term in assembled
 
 
 @pytest.mark.asyncio

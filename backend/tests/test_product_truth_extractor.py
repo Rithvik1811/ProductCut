@@ -286,3 +286,68 @@ async def test_same_product_false_applies_deterministic_photo1_backstop(caplog):
     assert {t["source"] for t in result} == {"photo_1"}
     assert len(result) == 2
     assert any("flagged a product mismatch" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Hallucination guard (_is_hallucination) — added 2026-07-15.
+# ---------------------------------------------------------------------------
+
+def test_is_hallucination_true_appears_to_be():
+    from agents.product_truth_extractor import _is_hallucination
+    assert _is_hallucination("The color appears to be a dark navy blue") is True
+
+
+def test_is_hallucination_true_unable_to_determine():
+    from agents.product_truth_extractor import _is_hallucination
+    assert _is_hallucination("unable to determine the exact material from these photos") is True
+
+
+def test_is_hallucination_false_specific_fact():
+    from agents.product_truth_extractor import _is_hallucination
+    assert _is_hallucination("matte midnight-blue powder coat on the outer shell") is False
+
+
+def test_validate_and_filter_drops_hallucination():
+    """A hallucination phrase in the fact causes the entry to be rejected."""
+    from agents.product_truth_extractor import _validate_and_filter
+    raw = [
+        {"truth_id": "t1", "fact": "the surface appears to be brushed aluminum", "category": "material", "source": "photo_1"},
+        {"truth_id": "t2", "fact": "hexagonal knurled grip ring 12 mm wide on the base", "category": "construction_detail", "source": "photo_1"},
+    ]
+    valid, rejected = _validate_and_filter(raw)
+    valid_facts = [v["fact"] for v in valid]
+    assert not any("appears to be" in f for f in valid_facts), "Hallucination fact should be rejected"
+    assert len(rejected) == 1
+
+
+# ---------------------------------------------------------------------------
+# Category-aware _is_generic (form_factor lower threshold) — added 2026-07-15.
+# ---------------------------------------------------------------------------
+
+def test_is_generic_form_factor_short_fact_accepted():
+    """3-word form_factor fact passes the lower threshold (min_words=3 for form_factor)."""
+    from agents.product_truth_extractor import _is_generic
+    assert _is_generic("compact cast-iron pan", category="form_factor") is False
+
+
+def test_is_generic_form_factor_2_word_still_rejected():
+    """2-word fact is too short even for form_factor."""
+    from agents.product_truth_extractor import _is_generic
+    assert _is_generic("cast iron", category="form_factor") is True
+
+
+def test_is_generic_regular_category_still_requires_6_words():
+    """Non-form_factor category still requires 6 words."""
+    from agents.product_truth_extractor import _is_generic
+    assert _is_generic("blue surface material", category="color") is True
+    assert _is_generic("deep matte midnight-blue powder coat on outer shell", category="color") is False
+
+
+# ---------------------------------------------------------------------------
+# Re-prompt message no longer mentions "wear marks" — added 2026-07-15.
+# ---------------------------------------------------------------------------
+
+def test_reprompt_message_does_not_contain_wear_marks():
+    from agents.product_truth_extractor import _reprompt_message
+    msg = _reprompt_message(rejected=[], missing_form_factor=False)
+    assert "wear mark" not in msg.lower(), "re-prompt should not mention 'wear marks' for non-worn products"

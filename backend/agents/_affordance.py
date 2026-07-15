@@ -50,6 +50,10 @@ _HUMAN_CONTACT_PART_WORDS = frozenset({
     "handle", "strap", "grip", "clasp", "drawstring", "buckle", "lanyard",
     "sling", "harness", "lace", "toggle", "wristband", "armband", "headband",
     "earcup", "earbud", "nosepad", "waistband", "shoulder",
+    # Direct hand-use goods (pans, kitchen tools, cutting boards, etc.) — no
+    # "carry" part needed; these objects are inherently hand-operated.
+    "pan", "pot", "lid", "knob", "spatula", "utensil", "blade", "knife",
+    "tong", "ladle", "whisk", "board", "rack", "tray", "platter",
 })
 
 # Truth categories that describe the object's overall size/shape — the only
@@ -61,6 +65,8 @@ _BODY_SCALE_WORDS = frozenset({
     "hand", "palm", "wrist", "shoulder", "waist", "hip", "neck", "torso",
     "back", "chest", "pocket", "arm", "leg", "ankle", "head", "ear", "body",
     "wearable", "handheld",
+    # Action verbs that appear in scale_cue/form_factor for hand-operated goods
+    "held", "lifted", "gripped", "poured", "tilted", "maneuvered", "grasped",
 })
 
 _WORD_RE = re.compile(r"[a-z]+")

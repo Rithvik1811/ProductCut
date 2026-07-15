@@ -119,6 +119,7 @@ from agents.shot_list_agent import shot_list_agent_node
 from agents.treatment_agent import treatment_agent_node
 from agents.visual_direction_agent import visual_direction_agent_node
 from agents.video_gen_node import video_gen_node
+from agents.brand_research_node import brand_research_node
 from agents.format_export_node import format_export_node
 from agents.voiceover_caption_agent import voiceover_caption_agent_node
 from graph.state import ProductCutState
@@ -129,6 +130,7 @@ logger = logging.getLogger("productcut.graph")
 def _build_uncompiled() -> StateGraph:
     """Construct the (uncompiled) graph."""
     builder = StateGraph(ProductCutState)
+    builder.add_node("brand_research_node", brand_research_node)
     builder.add_node("product_truth_extractor", product_truth_extractor_node)
     builder.add_node("concept_agent", concept_agent_node)
     builder.add_node("hook_checker", hook_checker_node)
@@ -138,7 +140,8 @@ def _build_uncompiled() -> StateGraph:
     builder.add_node("tone_checker", tone_checker_node)
     builder.add_node("meta_critic", meta_critic_node)
 
-    builder.add_edge(START, "product_truth_extractor")
+    builder.add_edge(START, "brand_research_node")
+    builder.add_edge("brand_research_node", "product_truth_extractor")
     builder.add_edge("product_truth_extractor", "concept_agent")
 
     # Fan-out: concept_agent's 4 script variants get scored by 5 parallel specialists.
