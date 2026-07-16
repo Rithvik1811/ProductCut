@@ -1,268 +1,87 @@
 """
-Voiceover + Caption Agent -- Qwen3-TTS-Flash via the native DashScope SDK (Phase 5).
+Voiceover + Caption Agent -- CosyVoice v2 (cosyvoice-v2, DashScope international)
+with per-beat pacing control (Phase 5).
 Spec of record: docs/TECHNICAL_DOCUMENTATION.md §5.11.
 
-Confirmed against the ACTUAL merged code before writing anything (per this
-task's own instruction not to assume field names):
+TTS ENGINE: CosyVoice v2 (DashScope native), replacing ElevenLabs.
+Keeps the entire hackathon stack within the Qwen/Alibaba Cloud ecosystem.
+NOTE: cosyvoice-v3 (which supports instruct_text emotion control) is only
+available in the Beijing/mainland region. cosyvoice-v2 is used here because
+this account runs on the international (US/Singapore) region. The Voice
+Direction Agent (agents/voice_direction_agent.py) still rewrites each
+ScriptBeat.line into natural spoken English and assigns emotion + pacing --
+the spoken_text rewrite reaches TTS directly (more natural phrasing, better
+TTS prosody), and pacing maps to cosyvoice-v2's speech_rate parameter.
+Emotion tagging is preserved in state for forward-compatibility with v3 once
+the international region supports it.
+When no directed beats are present (e.g. the Voice Direction Agent was
+skipped), falls back to the raw beat lines at normal speech_rate.
+
+Confirmed against the ACTUAL merged code:
   * `graph.state.WinningScript` (C1, frozen): {text, beats: list[ScriptBeat],
-    source_variant_ids}. `ScriptBeat` = {t_start, t_end, line} -- NOTE there is
-    no `beat_function` (hook/problem/demo/proof/cta) on a ScriptBeat; that enum
-    lives on `Treatment.beat_treatments[]`, written later by the Treatment
-    Agent. Since this node is a parallel branch off `winning_script` alone
-    (see PARALLEL BRANCH below), Treatment may not have run yet -- so beat
-    segmentation here is keyed on beat INDEX/`t_start`/`t_end`/`line` only,
-    never on `beat_function`.
+    source_variant_ids}. `ScriptBeat` = {t_start, t_end, line}. There is no
+    `beat_function` on a ScriptBeat; beat segmentation here is keyed on beat
+    INDEX only.
+  * `graph.state.DirectedBeat` (C1 v12): {beat_index, spoken_text, emotion,
+    pacing}. `spoken_text` is the natural spoken rewrite fed to CosyVoice;
+    `emotion` selects the Chinese instruct_text; `pacing` sets speech_rate.
   * `graph.state.Voiceover` (C1, frozen): `{audio_uri, caption_track_uri}` --
-    BOTH plain strings (OSS refs), confirmed against docs/TECHNICAL_DOCUMENTATION.md
-    §5.11's own output contract ("voiceover = {audio_uri, caption_track_uri}").
-    This task's own instructions suggested writing `vo_audio_ref` and
-    `caption_timing` fields -- those names do not exist anywhere in the real,
-    merged graph/state.py. Using the real ones instead: `state["voiceover"]`,
-    `.audio_uri`, `.caption_track_uri`. The `{text, start_ts, end_ts}` caption
-    array requirement 2 asks for is real work this module does, it is just not
-    stored inline in state -- like every other sizeable artifact in this
-    codebase (video_uri, master_cut_uri, exports), it is serialized to a file,
-    uploaded to OSS, and only the resulting signed URL lands in state, as
-    `caption_track_uri`.
-  * `.env.example`: `MODEL_TTS=qwen3-tts-flash` (confirmed exact value -- no
-    other snapshot pinned).
-  * `requirements.txt`'s own comment on the pinned `dashscope` dependency:
-    "native SDK: Wan/HappyHorse video synthesis + CosyVoice TTS task polling"
-    -- i.e. TTS is native-SDK territory in this codebase, NOT the OpenAI-
-    compatible endpoint every LLM/vision agent uses (docs/TECHNICAL_DOCUMENTATION.md
-    §9.7's "every speech call goes through the OpenAI-compatible endpoint" is
-    the aspirational/planning-doc claim; the actual pinned dependency comment
-    is the real, current answer, and it says native SDK -- the same
-    OpenAI-compatible-vs-native split agents/video_gen_node.py already
-    documented and followed for Wan).
-  * The installed `dashscope` package (`backend/.venv/.../dashscope/audio/qwen_tts/
-    speech_synthesizer.py`) was read directly rather than guessed: `SpeechSynthesizer.call(
-    model, text, api_key=None, workspace=None, voice=..., stream=...)` ->
-    `TextToSpeechResponse` whose `.output.audio` is a `TextToSpeechAudio` with
-    exactly `{expires_at, id, data, url}` -- CONFIRMED: no word/phoneme-level
-    timestamp field of any kind. This directly settles requirement 2's open
-    question: per-beat caption timing MUST be derived, not read off the API
-    response, for every beat whose synthesis succeeds it is derived from a
-    REAL measured clip duration (ffprobe), never a heuristic; the word-count
-    heuristic below is used ONLY as the estimate for a beat whose synthesis
-    permanently failed (see FAILURE HANDLING).
+    both plain strings (OSS refs). The `{text, start_ts, end_ts}` caption array
+    is serialized to a file, uploaded to OSS, and only the resulting signed URL
+    lands in state, as `caption_track_uri`.
 
-PARALLEL BRANCH, NOT A DOWNSTREAM STEP OF VIDEO-GEN (per the phase goal and
-docs/TECHNICAL_DOCUMENTATION.md §5.11: "runs as a parallel branch that starts
-as soon as the winning script is finalized... because voiceover depends only
-on the script, not on the rendered video"). This module's entry point,
-`voiceover_caption_agent_node`, reads ONLY `state["winning_script"]` +
-`state["job_id"]` -- it never reads `treatment`, `shot_list`, `budget_ledger`,
-or `generated_shots`, and writes only `state["voiceover"]` +
-`voiceover_reasoning_trace` (its OWN dedicated trace key, not the shared
-`reasoning_trace` every other node writes -- see graph/state.py's v7 changelog:
-this node now genuinely runs in the same superstep as treatment_agent, and two
-nodes read-modify-writing one plain-string channel raises LangGraph's
-InvalidUpdateError; a single-writer key sidesteps that without touching the
-other dozen agent modules' already-established read-modify-write contract).
-Nothing here depends on, blocks, or is blocked by Video-Gen/Ken-Burns/Continuity.
+PARALLEL BRANCH, NOT A DOWNSTREAM STEP OF VIDEO-GEN. This module's entry point,
+`voiceover_caption_agent_node`, reads ONLY `state["winning_script"]`,
+`state["directed_script_beats"]`, and `state["job_id"]` -- never `treatment`,
+`shot_list`, `budget_ledger`, or `generated_shots` -- and writes only
+`state["voiceover"]` + `voiceover_reasoning_trace` (its OWN dedicated trace key,
+not the shared `reasoning_trace`; see graph/state.py's v7 changelog).
 
-HOW THIS COMPOSES WITH THE REST OF THE GRAPH (checked graph/build.py and
-agents/merge_validator.py's `route_after_merge_validation` before deciding --
-not a guess): `winning_script` is written by `merge_validator_node` on EITHER
-a "finalize" or a "fallback" verdict (graph/build.py's own docstring). This is
-NOT a `Send()` fan-out (that pattern, used internally by video_gen_node.py, is
-for fanning one shot list out to N parallel per-shot branches within a single
-node -- a different problem). The mechanism used for a SECOND node to run in
-parallel off the SAME conditional edge is LangGraph's documented support for a
-conditional-edge path function returning a *list* of routing keys, not just one
-(confirmed by reading the installed `langgraph.graph.state.StateGraph.add_conditional_edges`'s
-own type signature: `path: Callable[..., Hashable | Sequence[Hashable]]`).
+WIRING (graph/build.py): merge_validator's "finalize"/"fallback" routes fan out
+to BOTH visual_direction_agent AND voice_direction_agent (parallel sub-branches).
+voice_direction_agent -> voiceover_caption_agent -> assembly_agent (defer=True).
 
-WIRED INTO graph/build.py (follow-up integration commit, matching this
-codebase's established rhythm -- see video_gen_node.py's own precedent). What
-actually landed, exactly as planned below except item 1 (kept
-`route_after_merge_validation` itself untouched -- it's independently
-unit-tested in test_merge_validator.py and called internally by
-`merge_validator_node`; graph/build.py instead wraps it in a small
-`_route_after_merge_validation_with_vo` path function used only by the
-conditional edge):
-  1. The conditional-edge path function's "finalize"/"fallback" branches return
-     `["treatment_agent", "voiceover_caption_agent"]` instead of a bare string
-     (its "copy_editor"/"meta_critic" retry-loop branches are unaffected --
-     winning_script isn't final yet on those paths, so VOX must not fire).
-  2. `builder.add_node("voiceover_caption_agent", voiceover_caption_agent_node)`
-     and `"voiceover_caption_agent": "voiceover_caption_agent"` added to the
-     `path_map` passed to the existing `add_conditional_edges("merge_validator", ...)`
-     call.
-  3. `builder.add_edge("voiceover_caption_agent", END)` -- nothing consumes
-     `state["voiceover"]` yet (Assembly, §5.12, is not built), so this branch
-     is a leaf for now, exactly like Continuity's "end" branch before Phase 4
-     added a consumer downstream of it.
+REQUIREMENT 1 -- PER-BEAT vs. WHOLE-SCRIPT TTS. Chosen: PER-BEAT (one
+CosyVoice call per beat). Why: docs §5.11's failure-handling sentence ("If
+synthesis fails for a line, the node retries that line") only makes sense at
+per-line granularity; per-beat also gives natural pause control at beat
+boundaries, per-beat emotion/pacing tuning, and an exact (ffprobe-measured)
+duration per beat before concatenating.
 
-WAS NOT WIRED INTO graph/build.py FOR ONE PASS -- deliberately, matching this
-codebase's own established rhythm (agents/video_gen_node.py, Phase 3, was
-merged standalone before its own later integration commit; RR then wired it +
-Ken-Burns in as a separate follow-up). This module followed the same
-precedent: built + tested standalone first, then wired in as a separate
-follow-up commit (the "WIRED INTO graph/build.py" section above) that also
-updated tests/test_graph_build.py, tests/test_graph_end_to_end.py,
-tests/test_graph_critic_chain.py, tests/test_graph_merge_validator.py,
-tests/test_continuity_loop_e2e.py, tests/test_phase4_integration_edge_cases.py,
-and tests/test_pipeline_integration_edge_cases.py (every test driving the
-compiled graph through merge_validator now fakes this node's TTS/OSS boundary
-too, via tests/_phase3_graph.py's new `patch_voiceover_boundaries`).
+REQUIREMENT 2 -- CAPTION GRANULARITY AND TIMING. One caption entry per beat.
+For a beat whose synthesis SUCCEEDED, start_ts/end_ts come from that beat's REAL
+measured clip duration (ffmpeg.probe, cumulative from 0). For a beat whose
+synthesis PERMANENTLY failed, the span is ESTIMATED: len(text.split()) /
+WORDS_PER_SECOND (reusing agents.pacing_checker.WORDS_PER_SECOND), floored at
+MIN_ESTIMATED_BEAT_SEC.
 
-REQUIREMENT 1 -- PER-BEAT vs. WHOLE-SCRIPT TTS, tradeoff and decision. Chosen:
-PER-BEAT (one `SpeechSynthesizer.call` per `ScriptBeat.line`), not one call for
-the whole script. Why: docs §5.11's own failure-handling sentence -- "If
-synthesis fails for a line, the node retries that line" -- only makes sense
-under a per-line/per-beat call granularity; a single whole-script call has no
-"a line" to selectively retry. Per-beat also gives natural, REAL pause control
-at beat boundaries (each beat's audio is a genuinely separate clip, concatenated
-in order) and -- combined with the confirmed absence of word-level timestamps
-above -- is the only way to get an exact (not estimated) duration per beat via
-ffprobe on each clip before concatenating. Cost: N TTS calls instead of 1 (N =
-beat count, typically 4-6 per §5.6's 3-7 shots / one beat per shot-ish scale),
-each a small, fast synthesis of a single short line rather than one longer
-call -- more calls, but each cheaper and independently retryable/degradable.
+REQUIREMENT 3 -- OSS PERSISTENCE. Reuses agents/_oss.py (upload_audio_to_oss /
+upload_json_to_oss) exclusively.
 
-REQUIREMENT 2 -- CAPTION GRANULARITY AND TIMING. One caption entry per beat
-(the finest structured text unit `WinningScript.beats` actually has -- there is
-no sub-beat/per-word structure anywhere in C1 to split further without
-inventing one). For a beat whose synthesis SUCCEEDED, `start_ts`/`end_ts` come
-from that beat's REAL measured clip duration (`ffmpeg.probe`, cumulative from
-0 at the first beat) -- exact alignment to the actual audio, not the script's
-own `t_start`/`t_end` (which are the *target* pacing timestamps validated by
-Pacing-Checker, not necessarily identical to how long Qwen3-TTS-Flash actually
-took to say the line). For a beat whose synthesis PERMANENTLY failed (see
-FAILURE HANDLING), there is no real audio to measure, so its `start_ts`/`end_ts`
-span is ESTIMATED: `len(line.split()) / WORDS_PER_SECOND` (reusing
-`agents.pacing_checker.WORDS_PER_SECOND` = 2.3, the same canonical spoken-rate
-constant the Pacing-Checker already validated this exact script against --
-not a second, possibly-drifting copy of that number), floored at
-`MIN_ESTIMATED_BEAT_SEC` so a near-empty line never collapses to ~0s. This is
-explicitly an ESTIMATE, not exact alignment -- flagged via `failure_reason` +
-`silent_beat_indices` on the returned voiceover dict (see FAILURE HANDLING).
+REQUIREMENT 4 -- EVENT. Emits the proposed C2 `vo_ready` event
+({voiceover, caption_count, degraded}) via adispatch_custom_event.
 
-REQUIREMENT 3 -- OSS PERSISTENCE. Reuses agents/_oss.py exclusively -- no new
-put_object_from_file/sign_url code here. The concatenated VO audio and the
-caption-timing JSON are two job-level (not per-shot) assets, so this task
-required a small ADDITIVE extension to _oss.py (see that module's own
-docstring "ADDITIVE (Phase 5, ...)" note): `oss_job_asset_key` (a job-only
-`jobs/{job_id}/{filename}` key, alongside the existing shot-scoped
-`oss_object_key`) and two thin wrappers, `upload_audio_to_oss` /
-`upload_json_to_oss`, both built on a shared `_put_and_sign` helper factored
-out of the pre-existing `upload_video_to_oss` (behavior-preserving refactor --
-test_oss.py's existing assertions are unchanged and still pass).
+REQUIREMENT 5 -- FAILURE HANDLING / DEGRADE PATH. Per-beat retry once, then
+degrade that single beat to a silent gap + estimated-timing caption, NEVER halt
+the whole node/job over one bad line (docs §5.11). Each beat gets at most 2
+attempts (1 initial + 1 retry) via `_synthesize_beat`; a beat that fails both
+contributes a silent gap (ffmpeg anullsrc) of its estimated duration. The
+returned `voiceover` dict always has audio_uri + caption_track_uri; when >=1
+beat degraded it additionally carries `failure_reason` ({type, detail}, reusing
+graph.state.FailureReason's frozen "timeout"/"api_error" vocabulary) and
+`silent_beat_indices: list[int]`.
 
-REQUIREMENT 4 -- EVENT. No `vo_ready` (or equivalent) event existed in C2
-before this task (checked graph/events.py's full `EventType` Literal: the
-original 10 + v2's "merge_validated" cover Ingest through job completion, none
-of them fire when VO synthesis finishes). Per this task's own instruction --
-"flagged clearly as a proposed additive change, not silently invented" -- this
-is added as `graph/events.py` v4: `"vo_ready"` + `VoReadyPayload {voiceover,
-caption_count, degraded}`, documented in that file's own version-history
-docstring exactly like every prior additive C2 change (v2's "merge_validated",
-v3's `ShotGeneratedPayload.status` addition), and explicitly marked there as a
-proposed change pending a sync with whoever builds the dashboard's VO panel --
-mirroring how `status="fallback_requested"` was flagged as self-invented and
-unconfirmed in video_gen_node.py before RR's Phase 3 sync formalized it.
-Dispatched via `adispatch_custom_event`, the same mechanism/precedent as
-`shot_generated` (video_gen_node.py) and `truth_extracted`
-(product_truth_extractor.py).
+OUTPUT AUDIO FORMAT -- MP3 (libmp3lame); ffmpeg re-encodes every per-beat clip
+through `aformat` before concatenation, so the output format is fixed
+regardless of the per-beat source format.
 
-REQUIREMENT 5 -- FAILURE HANDLING / DEGRADE PATH. Chosen: per-beat retry once,
-then degrade that single beat to "silent gap + estimated-timing caption",
-NEVER halt the whole node/job over one bad line. This is not an invented
-policy -- it is docs §5.11's own explicit sentence, followed literally: "If
-synthesis fails for a line, the node retries that line; on persistent failure
-the ad can assemble with captions only (silent-with-captions is a valid
-short-form format), recorded in the trace." Concretely:
-  * Each beat gets at most 2 attempts (1 initial + 1 retry) via `_synthesize_beat`.
-  * A beat that fails both attempts contributes a SILENT gap (ffmpeg `anullsrc`)
-    of its estimated duration to the concatenated audio timeline, not a missing
-    chunk -- the final `audio_uri` always spans the full ad, so downstream
-    ffmpeg concat/mixing (Assembly, not yet built) never has to special-case a
-    variable-length track.
-  * The RETURNED `voiceover` dict always has `audio_uri` + `caption_track_uri`
-    (the frozen, non-`NotRequired` C1 shape is honestly satisfied in every
-    case -- even a job where EVERY beat fails still produces a real, fully
-    silent audio_uri spanning the estimated total length, i.e. the doc's
-    literal "the ad can assemble with captions only", implemented as silence
-    rather than as a missing/optional key that would violate the frozen shape).
-  * Two EXTRA, non-C1 keys are added when >=1 beat degraded -- the same
-    "extra keys cost nothing, `Voiceover` has no Pydantic/`extra=forbid`
-    validator anywhere in this codebase" precedent video_gen_node.py's
-    `GeneratedShot.resolution_used`/etc. established: `failure_reason` (reuses
-    the EXISTING `graph.state.FailureReason` shape `{type, detail}` verbatim --
-    a TTS failure is always classified "timeout" or "api_error", both already
-    real values in that frozen Literal, so no new failure-type vocabulary is
-    invented) and `silent_beat_indices: list[int]`, naming exactly which beats
-    are silent so a future Assembly Agent can mute/gap those spans precisely
-    instead of guessing from a single boolean. Their ABSENCE (no
-    `failure_reason` key at all) is itself the "fully real, nothing degraded"
-    signal -- Assembly's obvious check is `"failure_reason" in state["voiceover"]`.
-
-OUTPUT AUDIO FORMAT -- MP3 (`libmp3lame`), chosen (not confirmed against a real
-Qwen3-TTS-Flash account response -- see next paragraph) as a broadly-compatible
-default for the concatenated master VO track; ffmpeg re-encodes every input
-through `aformat` before concatenation, so the OUTPUT format is fixed
-regardless of whatever container/codec each per-beat clip actually arrives in.
-
-RESOLVED -- CROSS-REGION TTS CREDENTIALS (live-confirmed via
-`derisk/test_tts_smoke.py`). The three items below were originally flagged as
-a single "KNOWN GAP" (response field + base-URL routing both unconfirmed
-against a live account). Live testing during that de-risk pass found this
-account's TTS access is genuinely **on a different DashScope region/workspace
-than every other model** -- `DASHSCOPE_API_KEY` (Virginia/`dashscope-us`,
-already `.env`-documented) returns a real, explicit `model_not_found` for
-every TTS model id tried (`qwen3-tts-flash`, `qwen-tts`, `cosyvoice-v1/v2`)
-via both the native SDK and the OpenAI-compatible endpoint, while the SAME
-account's TTS access genuinely works (confirmed via the DashScope console
-Playground) once addressed with dedicated Singapore/`dashscope-intl`
-credentials. This is an account/workspace-scoping fact, not a bug to fix in
-code -- so this module (and ONLY this module) reads a separate pair of env
-vars instead of the shared `DASHSCOPE_API_KEY`/`DASHSCOPE_BASE_URL` every
-other agent uses:
-  * `DASHSCOPE_TTS_API_KEY` (required, no fallback to `DASHSCOPE_API_KEY` --
-    the shared key is confirmed NOT to carry TTS scope on this account, so
-    silently falling back would just reproduce the `model_not_found` failure).
-  * `DASHSCOPE_TTS_BASE_URL` (required for a real call to succeed) -- set in
-    the SAME `.../compatible-mode/v1` flavor as `DASHSCOPE_BASE_URL` for
-    consistency (`.env.example`), even though this module calls the native
-    SDK, not the OpenAI-compatible client. `_resolve_tts_native_base_url()`
-    derives the native `.../api/v1` path from it (same host, different path,
-    exactly the relationship `docs/DERISK_VIDEO_GEN_RESULT.md` §5 documents
-    for Wan) -- confirmed live: the compatible-mode path itself does NOT work
-    against `dashscope.audio.qwen_tts.SpeechSynthesizer` (native SDK call),
-    only the derived native path does.
-  1. Response field: `TextToSpeechAudio.url` is the one actually populated by
-     a real call on this account (a signed `dashscope-result-sgp` OSS URL,
-     ~24h `expires_at`); `.data` came back as an empty string. `_call_qwen_tts`
-     below still handles a `.data`-only response defensively (never assume a
-     one-account observation is universal), but `.url` is the confirmed,
-     exercised path.
-  2. Base-URL routing: see "RESOLVED" above -- `DASHSCOPE_TTS_BASE_URL` is
-     effectively required for this account (not "most accounts need neither
-     override" as originally guessed), since TTS lives on a different
-     workspace/region than every other model this codebase calls. The
-     REAL RISK this creates -- unique to this being a genuinely parallel
-     branch (every other agent in this codebase runs strictly sequentially)
-     -- is now MOOT for the base-URL race originally flagged here:
-     `dashscope.base_http_api_url` is global, mutable SDK state, but
-     Video-Gen's optional `DASHSCOPE_VIDEO_BASE_URL` and this module's
-     `DASHSCOPE_TTS_BASE_URL` are two independently-resolved values only
-     ever written from within each module's own synchronous call (`asyncio.to_thread`),
-     so a genuine data race would require two threads mutating the same
-     process-global attribute between two DIFFERENT nodes' concurrent calls --
-     still a real, narrow risk if a job's Video-Gen and Voiceover branches
-     execute genuinely concurrently AND both need their override applied at
-     the same instant; flagged, not solved with a lock, matching
-     video_gen_node.py's own proportionate posture on its analogous gap.
-  3. `DEFAULT_TTS_VOICE` ("Cherry") is now CONFIRMED against a real account
-     (the de-risk call above succeeded with `voice="Cherry"`) -- no longer a
-     guess. Still env-overridable via `TTS_VOICE`.
+CREDENTIALS: DashScope reads DASHSCOPE_API_KEY from the environment automatically
+(same key used by every other DashScope call in this codebase). Voice and model
+are env-overridable (COSYVOICE_MODEL_ID / COSYVOICE_VOICE_ID). See .env.example.
 """
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import os
@@ -270,23 +89,24 @@ import tempfile
 from typing import Awaitable, Callable, Optional
 
 import ffmpeg
-from dashscope.audio.qwen_tts import SpeechSynthesizer
 from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.runnables import RunnableConfig
 
-from agents._oss import _download_to_temp, upload_audio_to_oss, upload_json_to_oss
+from agents._oss import upload_audio_to_oss, upload_json_to_oss
 from agents.pacing_checker import WORDS_PER_SECOND
-from graph.state import ProductCutState, WinningScript
+from graph.state import DirectedBeat, ProductCutState, WinningScript
 
 logger = logging.getLogger("productcut.agents.voiceover_caption_agent")
 
-# See KNOWN GAP #3.
-DEFAULT_TTS_VOICE = os.getenv("TTS_VOICE", "Cherry")
+# CosyVoice v2 model/voice, env-overridable. cosyvoice-v2 is the international-
+# region model (v3 is Beijing-only). longxiaochun_v2 is a deep commercial
+# narrator; other options: longyingxiao (female), longjiqi (male).
+COSYVOICE_MODEL_ID = os.getenv("COSYVOICE_MODEL_ID", "cosyvoice-v2")
+COSYVOICE_VOICE_ID = os.getenv("COSYVOICE_VOICE_ID", "longxiaochun_v2")
 
-# Qwen3-TTS-Flash synthesizes one short line per call -- generous margin above
-# the handful-of-seconds a single beat's line should realistically take,
-# without the multi-minute budget video_gen_node.py needs for a whole clip.
-DEFAULT_TTS_TIMEOUT_SEC = float(os.getenv("VOICEOVER_TTS_TIMEOUT_SEC", "60"))
+# CosyVoice synthesizes one short line per call -- generous margin above the
+# handful-of-seconds a single beat's line should realistically take.
+DEFAULT_COSYVOICE_TIMEOUT_SEC = float(os.getenv("VOICEOVER_TTS_TIMEOUT_SEC", "45"))
 
 # Floor so a near-empty/blank line never estimates to ~0s (requirement 2).
 MIN_ESTIMATED_BEAT_SEC = 0.5
@@ -296,136 +116,88 @@ MIN_ESTIMATED_BEAT_SEC = 0.5
 FAILURE_TYPE_TIMEOUT = "timeout"
 FAILURE_TYPE_API_ERROR = "api_error"
 
+# Per-pacing speech_rate multiplier for CosyVoice v2 (1.0 = normal speed).
+# cosyvoice-v2 does not support instruct_text emotion control (v3 only, and
+# v3 is Beijing-region only). Pacing is the only TTS-level delivery control
+# available on v2; emotion from the Voice Direction Agent still improves
+# quality indirectly via the spoken_text rewrite that reaches TTS.
+PACING_SPEECH_RATE: dict[str, float] = {
+    "slow": 0.85,
+    "normal": 1.0,
+    "fast": 1.10,
+}
+
+_DEFAULT_EMOTION = "conversational"
+
 _SILENCE_SAMPLE_RATE = 44100
 _SILENCE_CHANNEL_LAYOUT = "stereo"
 
 
 class VoiceoverTimeoutError(Exception):
-    """A single beat's Qwen3-TTS-Flash call never returned within the wait timeout."""
+    """A single beat's CosyVoice call never returned within the wait timeout."""
 
 
 class VoiceoverAPIError(Exception):
-    """The Qwen3-TTS-Flash call returned a hard failure (non-200 or no usable audio)."""
+    """The CosyVoice call returned a hard failure (SDK error or no usable audio)."""
 
 
 # ---------------------------------------------------------------------------
-# Real Qwen3-TTS-Flash call (native dashscope SDK -- see module docstring's
-# "RESOLVED" section on cross-region credentials and the response shape).
+# Real CosyVoice v3 call (dashscope SDK). One short line per call, tuned by
+# the beat's emotion (EMOTION_INSTRUCTIONS instruct_text) and pacing
+# (PACING_SPEECH_RATE speech_rate). Uses DASHSCOPE_API_KEY automatically.
 # ---------------------------------------------------------------------------
-def _extract_audio_field(audio, key: str) -> Optional[str]:
-    """Read `key` off a real `SpeechSynthesizer.call()` response's `output.audio`.
+def _call_cosyvoice_sync(
+    text: str,
+    pacing: str = "normal",
+) -> str:
+    """Blocking CosyVoice v2 synthesis of one line -> local temp MP3 path.
 
-    BUG FIX (found live, via derisk/test_tts_smoke.py): the installed SDK's
-    `TextToSpeechAudio` dataclass documents `url`/`data` as attributes, but a
-    REAL response's `output.audio` comes back as a plain `dict` (confirmed:
-    `type(resp.output.audio) is dict`), not a `TextToSpeechAudio` instance --
-    so the original `getattr(audio, "url", None)` silently returned `None`
-    every time, even on a fully successful call with a real signed URL
-    present. Every real production TTS call would have failed with "neither
-    url nor data" despite the API genuinely succeeding. Unit tests never
-    caught this because their `_FakeAudio` fixture used real attributes
-    (`self.url = url`), not a dict, which doesn't reproduce the real SDK's
-    shape. Handles both here defensively (dict-style first, since that's the
-    confirmed real shape; attribute-style as a fallback in case a future SDK
-    version wraps it in a real object again).
+    Returns the local path to the synthesized audio (never a remote URL) so the
+    caller can `ffmpeg.probe` its real duration and concatenate it with sibling
+    beats. `pacing` controls the speech_rate multiplier; cosyvoice-v2 does not
+    support instruct_text emotion control (that is v3-only, Beijing region).
     """
-    if isinstance(audio, dict):
-        return audio.get(key)
-    return getattr(audio, key, None)
+    import dashscope
+    from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat
 
+    api_key = os.environ.get("DASHSCOPE_API_KEY")
+    if api_key:
+        dashscope.api_key = api_key
 
-def _write_base64_audio_to_temp(data: str) -> str:
-    """Decode a base64 `TextToSpeechAudio.data` payload to a local temp file.
+    speech_rate = PACING_SPEECH_RATE.get(pacing, 1.0)
 
-    Suffix is deliberately generic (`.audio`, not a guessed `.mp3`/`.wav`) --
-    ffmpeg's demuxer probes actual content, not the extension, and the real
-    encoding this path returns is unconfirmed (see module docstring KNOWN GAP #1).
-    """
-    raw = base64.b64decode(data)
-    fd, path = tempfile.mkstemp(suffix=".audio", prefix="qwen_tts_b64_")
+    synthesizer = SpeechSynthesizer(
+        model=COSYVOICE_MODEL_ID,
+        voice=COSYVOICE_VOICE_ID,
+        format=AudioFormat.MP3_22050HZ_MONO_256KBPS,
+        speech_rate=speech_rate,
+    )
+    audio_bytes: bytes = synthesizer.call(text)
+    if not audio_bytes:
+        raise VoiceoverAPIError("CosyVoice returned empty audio bytes")
+
+    fd, path = tempfile.mkstemp(suffix=".mp3", prefix="cosyvoice_tts_")
     with os.fdopen(fd, "wb") as fh:
-        fh.write(raw)
+        fh.write(audio_bytes)
     return path
 
 
-def _resolve_tts_native_base_url() -> Optional[str]:
-    """Derive the native dashscope SDK base URL from `DASHSCOPE_TTS_BASE_URL`.
-
-    `DASHSCOPE_TTS_BASE_URL` is set in the same `.../compatible-mode/v1`
-    flavor as `DASHSCOPE_BASE_URL` (`.env.example`) for consistency, but
-    `dashscope.audio.qwen_tts.SpeechSynthesizer` is a NATIVE SDK call, which
-    needs the native `.../api/v1` path on the SAME host -- confirmed live
-    (see module docstring "RESOLVED" section): the compatible-mode path
-    itself returns nothing usable against this native call, only the derived
-    native path does.
-    """
-    compatible_url = os.getenv("DASHSCOPE_TTS_BASE_URL")
-    if not compatible_url:
-        return None
-    return compatible_url.replace("/compatible-mode/v1", "/api/v1")
-
-
-def _call_qwen_tts_sync(text: str) -> str:
-    """Blocking Qwen3-TTS-Flash call + download/decode to a local temp file.
-
-    Returns the local path to the synthesized audio (never a remote URL --
-    unlike video_gen_node.py's Wan call, this module needs the raw bytes
-    immediately, to `ffmpeg.probe` its real duration and later concatenate it
-    with its sibling beats, so downloading here rather than deferring to a
-    separate persistence step avoids a second round trip).
-
-    Uses `DASHSCOPE_TTS_API_KEY`/`DASHSCOPE_TTS_BASE_URL`, NOT the shared
-    `DASHSCOPE_API_KEY`/`DASHSCOPE_BASE_URL` every other agent in this
-    codebase uses -- see module docstring "RESOLVED -- CROSS-REGION TTS
-    CREDENTIALS" for why this account's TTS access is scoped to a different
-    DashScope region/workspace than text/vision/video.
-    """
-    model = os.environ["MODEL_TTS"]  # KeyError is intentional -- see product_truth_extractor.py's precedent on MODEL_VISION
-    native_base_url = _resolve_tts_native_base_url()
-    if native_base_url:
-        import dashscope
-
-        dashscope.base_http_api_url = native_base_url
-
-    response = SpeechSynthesizer.call(
-        model=model,
-        text=text,
-        voice=DEFAULT_TTS_VOICE,
-        api_key=os.environ["DASHSCOPE_TTS_API_KEY"],  # dedicated TTS-scoped key -- see module docstring
-    )
-    if response.status_code != 200:
-        raise VoiceoverAPIError(
-            f"Qwen3-TTS-Flash call failed (code={getattr(response, 'code', '')!r}, "
-            f"message={getattr(response, 'message', '')!r})"
-        )
-
-    audio = response.output.audio if response.output else None
-    if audio is None:
-        raise VoiceoverAPIError("Qwen3-TTS-Flash response had no output.audio at all")
-
-    url = _extract_audio_field(audio, "url")
-    if url:
-        return _download_to_temp(url)
-    data = _extract_audio_field(audio, "data")
-    if data:
-        return _write_base64_audio_to_temp(data)
-    raise VoiceoverAPIError("Qwen3-TTS-Flash response's output.audio had neither url nor data")
-
-
-async def _call_qwen_tts(text: str) -> str:
-    """Async wrapper: the native SDK call is blocking, so it runs in a thread
-    (matching ken_burns_fallback_node.py's posture on its own blocking ffmpeg
-    calls), with an explicit wait timeout (matching video_gen_node.py's
-    `_call_wan_video_gen` posture on its own blocking-call timeout).
+async def _call_cosyvoice(
+    text: str,
+    pacing: str = "normal",
+) -> str:
+    """Async wrapper: the SDK call is blocking, so it runs in a thread with an
+    explicit wait timeout (matching video_gen_node.py's posture on its own
+    blocking-call timeout).
     """
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(_call_qwen_tts_sync, text),
-            timeout=DEFAULT_TTS_TIMEOUT_SEC,
+            asyncio.to_thread(_call_cosyvoice_sync, text, pacing),
+            timeout=DEFAULT_COSYVOICE_TIMEOUT_SEC,
         )
     except asyncio.TimeoutError as exc:
         raise VoiceoverTimeoutError(
-            f"Qwen3-TTS-Flash exceeded the {DEFAULT_TTS_TIMEOUT_SEC:.0f}s wait timeout"
+            f"CosyVoice exceeded the {DEFAULT_COSYVOICE_TIMEOUT_SEC:.0f}s wait timeout"
         ) from exc
     except VoiceoverAPIError:
         raise
@@ -434,6 +206,19 @@ async def _call_qwen_tts(text: str) -> str:
 
 
 SynthesizeFn = Callable[[str], Awaitable[str]]
+
+
+def _make_cosyvoice_fn(
+    pacing: str = "normal",
+) -> SynthesizeFn:
+    """Closure factory: bind pacing into a single-arg `SynthesizeFn` so the
+    per-beat retry logic (`_synthesize_beat`) stays unchanged (it only ever
+    passes `text`). emotion is not passed to cosyvoice-v2 (no instruct_text
+    support); it still shaped the spoken_text rewrite in voice_direction_agent."""
+    async def _fn(text: str) -> str:
+        return await _call_cosyvoice(text, pacing)
+
+    return _fn
 
 
 # ---------------------------------------------------------------------------
@@ -492,9 +277,7 @@ def _render_silence_clip(duration: float) -> str:
     into one shared silence node, and the later `aformat` filter would then
     have two outgoing edges to `concat`'s two input slots, which ffmpeg-python
     rejects with "a `split` filter is probably required". Rendering each gap
-    to its own always-unique temp file path sidesteps that dedup entirely --
-    two files can share identical audio content and duration without ever
-    comparing equal as graph nodes.
+    to its own always-unique temp file path sidesteps that dedup entirely.
     """
     fd, path = tempfile.mkstemp(suffix=".wav", prefix="voiceover_silence_")
     os.close(fd)
@@ -581,6 +364,7 @@ async def generate_voiceover(
     winning_script: WinningScript,
     job_id: str,
     *,
+    directed_beats: Optional[list[DirectedBeat]] = None,
     synth_fn: Optional[SynthesizeFn] = None,
     upload_audio_fn: Optional[Callable[[str], str]] = None,
     upload_captions_fn: Optional[Callable[[str], str]] = None,
@@ -593,24 +377,27 @@ async def generate_voiceover(
         see module docstring REQUIREMENT 5), ready to assign to
         `state["voiceover"]` verbatim.
       * `captions` is the full `[{text, start_ts, end_ts}, ...]` list (one
-        entry per beat) -- not itself part of state (see module docstring),
-        but returned so the node wrapper can report `caption_count` on the
-        `vo_ready` event and in the reasoning trace without re-deriving it.
+        entry per beat).
 
-    `synth_fn` / `upload_audio_fn` / `upload_captions_fn` are injectable (same
-    `generate_fn`/`client=None` pattern every other agent module here uses) --
-    default to the real Qwen3-TTS-Flash call and the real OSS uploads.
+    Per-beat text + delivery selection:
+      * If `synth_fn` is injected (tests), it's used as-is for every beat with
+        the RAW beat line -- emotion/directed_beats are ignored (the injected
+        fn is the whole boundary under test).
+      * Else if `directed_beats` is available, each beat uses its `spoken_text`
+        (falling back to the raw line) and a CosyVoice fn tuned with the beat's
+        emotion instruction and pacing speech_rate.
+      * Else, each beat uses its raw line with a neutral (conversational) voice.
     """
-    fn: SynthesizeFn = synth_fn or _call_qwen_tts
     upload_audio = upload_audio_fn or _make_audio_upload_fn(job_id)
     upload_captions = upload_captions_fn or _make_captions_upload_fn(job_id)
 
-    beats = winning_script.get("beats") or []
-    if not beats:
+    raw_beats = winning_script.get("beats") or []
+    if not raw_beats:
         # Degenerate case (should not happen -- merge_validator_node always
         # produces beats -- but never crash on a malformed winning_script).
         logger.warning("Voiceover: winning_script has no beats -- producing an empty, fully-silent track.")
-        beats = [{"t_start": 0.0, "t_end": MIN_ESTIMATED_BEAT_SEC, "line": ""}]
+        raw_beats = [{"t_start": 0.0, "t_end": MIN_ESTIMATED_BEAT_SEC, "line": ""}]
+        directed_beats = None
 
     segments: list[tuple[Optional[str], float]] = []
     captions: list[dict] = []
@@ -618,9 +405,21 @@ async def generate_voiceover(
     silent_beat_indices: list[int] = []
     running_ts = 0.0
 
-    for i, beat in enumerate(beats):
-        text = beat.get("line", "")
-        local_path, beat_failure = await _synthesize_beat(text, fn)
+    for i, beat in enumerate(raw_beats):
+        if synth_fn is not None:
+            # Test injection -- use the injected fn as-is with the raw line.
+            text = beat.get("line", "")
+            beat_fn = synth_fn
+        elif directed_beats and i < len(directed_beats):
+            d = directed_beats[i]
+            text = d.get("spoken_text") or beat.get("line", "")
+            pacing = d.get("pacing", "normal")
+            beat_fn = _make_cosyvoice_fn(pacing)
+        else:
+            text = beat.get("line", "")
+            beat_fn = _make_cosyvoice_fn()
+
+        local_path, beat_failure = await _synthesize_beat(text, beat_fn)
         if local_path is not None:
             duration = await asyncio.to_thread(_probe_duration_sec, local_path)
         else:
@@ -667,28 +466,30 @@ async def generate_voiceover(
 
 
 # ---------------------------------------------------------------------------
-# LangGraph node wrapper. NOT wired into graph/build.py yet -- see module
-# docstring's "HOW THIS COMPOSES..." / "NOT WIRED..." sections.
+# LangGraph node wrapper.
 # ---------------------------------------------------------------------------
 async def voiceover_caption_agent_node(
     state: ProductCutState,
     config: Optional[RunnableConfig] = None,
 ) -> dict:
-    """LangGraph node wrapper: reads `winning_script`/`job_id` from state,
-    synthesizes VO audio + caption timing, persists both to OSS, and emits the
-    proposed C2 `vo_ready` event (see module docstring REQUIREMENT 4).
+    """LangGraph node wrapper: reads `winning_script`/`directed_script_beats`/
+    `job_id` from state, synthesizes VO audio + caption timing, persists both to
+    OSS, and emits the proposed C2 `vo_ready` event (see module docstring
+    REQUIREMENT 4).
 
     `state["winning_script"]` is accessed directly (KeyError, not `.get(...)`)
     -- this node's one hard precondition is that `merge_validator_node` already
-    finalized it; a KeyError here means a wiring bug (this node invoked before
-    winning_script exists), not a normal runtime-data gap, matching this
-    codebase's posture on other hard preconditions (e.g.
-    product_truth_extractor_node's direct `state["product_photos"]` access).
+    finalized it. `directed_script_beats` is read with `.get(...)` -- it is a
+    NotRequired enhancement (the Voice Direction Agent runs as a serial pre-step
+    but this node still degrades gracefully to the raw beat lines if it's absent).
     """
     job_id = state.get("job_id", "unknown_job")
     winning_script = state["winning_script"]
+    directed_beats = state.get("directed_script_beats")
 
-    voiceover, captions = await generate_voiceover(winning_script, job_id)
+    voiceover, captions = await generate_voiceover(
+        winning_script, job_id, directed_beats=directed_beats
+    )
 
     await adispatch_custom_event(
         "vo_ready",
@@ -710,23 +511,28 @@ async def voiceover_caption_agent_node(
 
     return {
         "voiceover": voiceover,
-        # Dedicated key, NOT the shared `reasoning_trace` -- this node runs as a
-        # genuine parallel branch alongside treatment_agent (graph/build.py), and
-        # two nodes read-modify-writing the same plain-string channel in the same
-        # superstep raises LangGraph's InvalidUpdateError. See graph/state.py's
+        # Dedicated key, NOT the shared `reasoning_trace` -- see graph/state.py's
         # v7 changelog note for the full reasoning.
         "voiceover_reasoning_trace": state.get("voiceover_reasoning_trace", "") + trace_note,
     }
 
 
 __all__ = [
-    "DEFAULT_TTS_VOICE",
-    "DEFAULT_TTS_TIMEOUT_SEC",
+    "COSYVOICE_MODEL_ID",
+    "COSYVOICE_VOICE_ID",
+    "PACING_SPEECH_RATE",
+    "DEFAULT_COSYVOICE_TIMEOUT_SEC",
     "MIN_ESTIMATED_BEAT_SEC",
     "FAILURE_TYPE_TIMEOUT",
     "FAILURE_TYPE_API_ERROR",
     "VoiceoverTimeoutError",
     "VoiceoverAPIError",
+    "SynthesizeFn",
+    "_call_cosyvoice_sync",
+    "_call_cosyvoice",
+    "_make_cosyvoice_fn",
+    "_synthesize_beat",
+    "_estimate_duration_sec",
     "generate_voiceover",
     "voiceover_caption_agent_node",
 ]

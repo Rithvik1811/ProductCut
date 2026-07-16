@@ -118,6 +118,7 @@ from agents.product_truth_extractor import product_truth_extractor_node
 from agents.shot_list_agent import shot_list_agent_node
 from agents.treatment_agent import treatment_agent_node
 from agents.visual_direction_agent import visual_direction_agent_node
+from agents.voice_direction_agent import voice_direction_agent_node
 from agents.video_gen_node import video_gen_node
 from agents.brand_research_node import brand_research_node
 from agents.format_export_node import format_export_node
@@ -178,6 +179,11 @@ def _build_uncompiled() -> StateGraph:
     # winning_script alone -- it depends only on the script, not on the rendered
     # video, so it starts the same superstep as treatment_agent rather than
     # waiting behind Video-Gen/Continuity.
+    # Voice Direction Agent runs as a serial pre-step before the voiceover node
+    # (both in a sub-branch off merge_validator, parallel with
+    # visual_direction_agent): it rewrites each beat for spoken delivery and
+    # assigns per-beat emotion/pacing consumed by voiceover_caption_agent.
+    builder.add_node("voice_direction_agent", voice_direction_agent_node)
     builder.add_node("voiceover_caption_agent", voiceover_caption_agent_node)
     # Phase 5 (§5.12): Assembly Agent is a genuine fan-in JOIN of the voiceover
     # branch and the (possibly multi-pass) continuity retry loop -- see module
@@ -186,6 +192,7 @@ def _build_uncompiled() -> StateGraph:
     # compiled-graph test.
     builder.add_node("assembly_agent", assembly_agent_node, defer=True)
     builder.add_node("format_export_node", format_export_node)
+    builder.add_edge("voice_direction_agent", "voiceover_caption_agent")
     builder.add_edge("voiceover_caption_agent", "assembly_agent")
     builder.add_edge("assembly_agent", "format_export_node")
     builder.add_edge("format_export_node", END)
@@ -216,7 +223,7 @@ def _build_uncompiled() -> StateGraph:
             "copy_editor": "copy_editor",
             "meta_critic": "meta_critic",
             "fallback": "visual_direction_agent",      # was "treatment_agent"
-            "voiceover_caption_agent": "voiceover_caption_agent",
+            "voice_direction_agent": "voice_direction_agent",   # NEW
             "visual_direction_agent": "visual_direction_agent",
         },
     )
@@ -227,22 +234,27 @@ def _route_after_merge_validation_with_vo(state: ProductCutState) -> list[str]:
     """Conditional-edge path function: wraps `route_after_merge_validation` (kept
     untouched -- it's independently unit-tested in test_merge_validator.py and
     also called internally by merge_validator_node itself, both against its
-    original bare-str contract) to additionally fan out to
-    `voiceover_caption_agent` whenever winning_script is actually final
-    ("finalize" or "fallback" -- both set a real, usable winning_script per the
-    module docstring above). LangGraph's `add_conditional_edges` accepts a path
-    function returning a *list* of routing keys for exactly this "one edge,
-    multiple parallel next-nodes" case (confirmed against the installed
+    original bare-str contract) to additionally fan out to TWO parallel
+    sub-branches whenever winning_script is actually final ("finalize" or
+    "fallback" -- both set a real, usable winning_script per the module docstring
+    above): the visual branch (`visual_direction_agent` -> treatment_agent -> ...)
+    and the voice branch (`voice_direction_agent` -> voiceover_caption_agent ->
+    assembly_agent). The Voice Direction Agent rewrites each beat for spoken
+    delivery + emotion/pacing before the voiceover node synthesizes it, so this
+    fans to `voice_direction_agent` (the head of that sub-branch) rather than
+    directly to `voiceover_caption_agent`.
+
+    LangGraph's `add_conditional_edges` accepts a path function returning a
+    *list* of routing keys for exactly this "one edge, multiple parallel
+    next-nodes" case (confirmed against the installed
     `StateGraph.add_conditional_edges` signature: `path: Callable[...,
-    Hashable | Sequence[Hashable]]`) -- see agents/voiceover_caption_agent.py's
-    own "HOW THIS COMPOSES WITH THE REST OF THE GRAPH" docstring section for the
-    original wiring plan this implements. The "copy_editor"/"meta_critic" retry
+    Hashable | Sequence[Hashable]]`). The "copy_editor"/"meta_critic" retry
     branches are unaffected -- winning_script isn't final yet on those paths, so
-    Voiceover must not fire.
+    neither sub-branch fires.
     """
     route = route_after_merge_validation(state)
     if route in ("finalize", "fallback"):
-        return ["visual_direction_agent", "voiceover_caption_agent"]
+        return ["visual_direction_agent", "voice_direction_agent"]
     return [route]
 
 

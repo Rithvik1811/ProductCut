@@ -142,13 +142,14 @@ def patch_continuity_boundaries(
 
 
 def patch_voiceover_boundaries(monkeypatch) -> None:
-    """Fake the Voiceover + Caption Agent's TTS synth + OSS upload boundary
-    (Phase 5, wired as a parallel branch off merge_validator alongside
-    treatment_agent), so a full-graph test doesn't hit real DashScope TTS or
-    OSS. Mirrors patch_phase3_boundaries/patch_continuity_boundaries above --
-    every graph test that runs past merge_validator's "finalize"/"fallback"
-    routes should call this too, now that voiceover_caption_agent fans out on
-    the same edge."""
+    """Fake the Voiceover + Caption Agent's TTS synth + OSS upload boundary AND
+    the Voice Direction Agent's LLM boundary (Phase 5 -- both now sit in a
+    parallel sub-branch off merge_validator: voice_direction_agent ->
+    voiceover_caption_agent), so a full-graph test doesn't hit real CosyVoice
+    TTS, OSS, or the DashScope LLM. Mirrors patch_phase3_boundaries/
+    patch_continuity_boundaries above -- every graph test that runs past
+    merge_validator's "finalize"/"fallback" routes should call this too, now
+    that both nodes fan out on the same edge."""
 
     async def _fake_generate_voiceover(winning_script, job_id, **kwargs):  # noqa: ARG001
         beats = winning_script.get("beats") or []
@@ -163,6 +164,23 @@ def patch_voiceover_boundaries(monkeypatch) -> None:
         return voiceover, captions
 
     monkeypatch.setattr("agents.voiceover_caption_agent.generate_voiceover", _fake_generate_voiceover)
+
+    async def _fake_generate_directed_beats(winning_script, **kwargs):  # noqa: ARG001
+        beats = winning_script.get("beats") or []
+        return [
+            {
+                "beat_index": i,
+                "spoken_text": b.get("line", ""),
+                "emotion": "conversational",
+                "pacing": "normal",
+            }
+            for i, b in enumerate(beats)
+        ]
+
+    monkeypatch.setattr(
+        "agents.voice_direction_agent.generate_directed_beats",
+        _fake_generate_directed_beats,
+    )
 
 
 def patch_assembly_boundaries(monkeypatch) -> None:

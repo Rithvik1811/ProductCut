@@ -4,7 +4,7 @@ Extend additively only: add new keys, never rename/remove an existing one
 without a sync between KR and RR and a version bump in this docstring.
 Spec of record: docs/TECHNICAL_DOCUMENTATION.md section 6.
 
-version: 11
+version: 12
   - v2: added CompletionDetail + two CriticScore keys (completion, completion_detail)
         and six NotRequired Critic-Chain scratch keys (hook/pacing/body/cta/tone_scores,
         meta_critic_result) to plumb the 5 parallel checkers into the Meta-Critic join.
@@ -121,6 +121,14 @@ version: 11
   - v11: Visual Direction Agent: adds BeatVisualDirection + VisualDirection TypedDicts
         and visual_direction: NotRequired[VisualDirection] to ProductCutState.
         ProductTruth.category: "imperfection" → "material_character".
+  - v12: Voice Direction Agent (agents/voice_direction_agent.py): adds DirectedBeat
+        TypedDict and directed_script_beats: NotRequired[list[DirectedBeat]] to
+        ProductCutState. Each DirectedBeat carries spoken_text (a natural spoken
+        English rewrite of the raw ScriptBeat.line) plus emotion + pacing metadata
+        used by voiceover_caption_agent to build CosyVoice instruction + speech_rate per beat.
+        Written by voice_direction_agent_node (runs as a serial pre-step before
+        voiceover_caption_agent), read by voiceover_caption_agent_node in preference
+        to raw winning_script.beats.
 """
 from typing import Literal, TypedDict
 from typing_extensions import NotRequired
@@ -187,6 +195,13 @@ class WinningScript(TypedDict):
     text: str
     beats: list[ScriptBeat]
     source_variant_ids: list[str]
+
+
+class DirectedBeat(TypedDict):
+    beat_index: int
+    spoken_text: str   # natural spoken English rewrite of ScriptBeat.line
+    emotion: Literal["warm", "excited", "authoritative", "conversational", "urgent"]
+    pacing: Literal["slow", "normal", "fast"]
 
 
 class BeatTreatment(TypedDict):
@@ -371,6 +386,10 @@ class ProductCutState(TypedDict, total=False):
     coherence_validation_result: NotRequired[dict]
     last_copy_edit: NotRequired[dict]
     winning_script: WinningScript
+    # v12: per-beat spoken-English rewrites + emotion/pacing metadata, written by
+    # voice_direction_agent_node (serial pre-step before voiceover_caption_agent),
+    # read by voiceover_caption_agent_node in preference to raw winning_script.beats.
+    directed_script_beats: NotRequired[list[DirectedBeat]]
     reasoning_trace: str
 
     # populated by Phase 2 (Treatment Agent, Shot-List Agent, Budget Gate)

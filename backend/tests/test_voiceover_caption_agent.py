@@ -6,16 +6,15 @@ ffmpeg/ffprobe being on PATH -- same `_skip_no_ffmpeg` convention
 test_ken_burns_fallback_node.py established), caption-timing correctness (real
 measured durations) and the word-count estimation heuristic for a permanently
 failed beat, the per-beat retry-then-degrade failure path (failure_reason /
-silent_beat_indices), the real Qwen3-TTS-Flash response-shape handling
-(url vs. base64 `data`, non-200 status), and the node wrapper's `vo_ready`
-event + reasoning trace.
+silent_beat_indices), the CosyVoice sync call (mocked dashscope SDK), directed-beat
+spoken_text/emotion/pacing selection, and the node wrapper's `vo_ready` event +
+reasoning trace.
 
-Every test injects a fake `synth_fn` (or mocks `SpeechSynthesizer.call`
-directly for the response-shape tests) -- no real DashScope call is ever made.
+Every test injects a fake `synth_fn` (or mocks the dashscope SDK client
+directly for the sync-call test) -- no real CosyVoice API call is ever made.
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
 import shutil
@@ -25,12 +24,13 @@ import pytest
 from langchain_core.runnables import RunnableLambda
 
 from agents.voiceover_caption_agent import (
+    COSYVOICE_VOICE_ID,
     FAILURE_TYPE_API_ERROR,
     FAILURE_TYPE_TIMEOUT,
     MIN_ESTIMATED_BEAT_SEC,
     VoiceoverAPIError,
     VoiceoverTimeoutError,
-    _call_qwen_tts_sync,
+    _call_cosyvoice_sync,
     _estimate_duration_sec,
     _synthesize_beat,
     generate_voiceover,
@@ -135,119 +135,39 @@ async def test_synthesize_beat_degrades_after_two_failures():
 
 
 # ---------------------------------------------------------------------------
-# _call_qwen_tts_sync: real confirmed Qwen3-TTS-Flash response shape
-# (dashscope.audio.qwen_tts.speech_synthesizer.TextToSpeechResponse), url vs.
-# base64 data, and a non-200 status.
-#
-# `_fake_audio()` returns a plain dict, NOT an attribute-accessible object --
-# this matches the REAL confirmed shape (derisk/test_tts_smoke.py found
-# `type(resp.output.audio) is dict` live), and deliberately replaces an
-# earlier version of this fixture that used a `self.url = url` attribute
-# object. That earlier fixture was WRONG and let a real bug ship:
-# `_call_qwen_tts_sync` used `getattr(audio, "url", None)`, which always
-# silently returned `None` against the real dict shape, so every real
-# production call failed with "neither url nor data" despite the API
-# genuinely succeeding -- these tests passed the whole time because the fake
-# didn't reproduce the real shape. Fixed in both `_extract_audio_field` (dict
-# access first) and here (a realistic fake).
+# _call_cosyvoice_sync: calls SpeechSynthesizer.call() and writes returned
+# bytes to a temp MP3 file. The dashscope SDK is mocked so no real API call
+# is made.
 # ---------------------------------------------------------------------------
-def _fake_audio(url=None, data=None) -> dict:
-    return {"url": url, "data": data, "expires_at": 0, "id": "test-audio-id"}
+def test_call_cosyvoice_sync_creates_temp_file(monkeypatch):
+    """_call_cosyvoice_sync calls SpeechSynthesizer.call() and writes MP3 bytes."""
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
 
+    fake_audio = b"fake-cosyvoice-mp3-data"
+    captured = {}
 
-class _FakeOutput:
-    def __init__(self, audio):
-        self.audio = audio
+    class _FakeSynthesizer:
+        def __init__(self, **kwargs):
+            captured["model"] = kwargs.get("model")
+            captured["voice"] = kwargs.get("voice")
+            captured["speech_rate"] = kwargs.get("speech_rate")
 
+        def call(self, text):
+            captured["text"] = text
+            return fake_audio
 
-class _FakeResponse:
-    def __init__(self, status_code, output=None, code="", message=""):
-        self.status_code = status_code
-        self.output = output
-        self.code = code
-        self.message = message
+    import dashscope.audio.tts_v2 as tts_module
+    monkeypatch.setattr(tts_module, "SpeechSynthesizer", _FakeSynthesizer)
 
-
-def test_call_qwen_tts_sync_downloads_from_url(monkeypatch, tmp_path):
-    monkeypatch.setenv("MODEL_TTS", "qwen3-tts-flash")
-    downloaded = tmp_path / "clip.mp3"
-    downloaded.write_bytes(b"real-bytes")
-
-    def fake_call(**kwargs):
-        assert kwargs["model"] == "qwen3-tts-flash"
-        assert kwargs["text"] == "hello there"
-        return _FakeResponse(200, output=_FakeOutput(_fake_audio(url="http://tts.example/clip.mp3")))
-
-    monkeypatch.setattr("agents.voiceover_caption_agent.SpeechSynthesizer.call", fake_call)
-    monkeypatch.setattr(
-        "agents.voiceover_caption_agent._download_to_temp",
-        lambda url: str(downloaded),
-    )
-
-    path = _call_qwen_tts_sync("hello there")
-    assert path == str(downloaded)
-
-
-def test_call_qwen_tts_sync_decodes_base64_data(monkeypatch, tmp_path):
-    monkeypatch.setenv("MODEL_TTS", "qwen3-tts-flash")
-    raw = b"decoded-audio-bytes"
-    encoded = base64.b64encode(raw).decode("ascii")
-
-    def fake_call(**kwargs):
-        return _FakeResponse(200, output=_FakeOutput(_fake_audio(data=encoded)))
-
-    monkeypatch.setattr("agents.voiceover_caption_agent.SpeechSynthesizer.call", fake_call)
-
-    path = _call_qwen_tts_sync("hello")
+    path = _call_cosyvoice_sync("hello world", "fast")
     try:
         with open(path, "rb") as fh:
-            assert fh.read() == raw
+            assert fh.read() == fake_audio
+        assert captured["voice"] == COSYVOICE_VOICE_ID
+        assert captured["text"] == "hello world"
+        assert captured["speech_rate"] == pytest.approx(1.10)
     finally:
         os.remove(path)
-
-
-def test_call_qwen_tts_sync_raises_on_non_200(monkeypatch):
-    monkeypatch.setenv("MODEL_TTS", "qwen3-tts-flash")
-
-    def fake_call(**kwargs):
-        return _FakeResponse(400, code="InvalidParameter", message="bad voice")
-
-    monkeypatch.setattr("agents.voiceover_caption_agent.SpeechSynthesizer.call", fake_call)
-
-    with pytest.raises(VoiceoverAPIError, match="InvalidParameter"):
-        _call_qwen_tts_sync("hello")
-
-
-def test_call_qwen_tts_sync_raises_when_audio_has_neither_url_nor_data(monkeypatch):
-    monkeypatch.setenv("MODEL_TTS", "qwen3-tts-flash")
-
-    def fake_call(**kwargs):
-        return _FakeResponse(200, output=_FakeOutput(_fake_audio()))
-
-    monkeypatch.setattr("agents.voiceover_caption_agent.SpeechSynthesizer.call", fake_call)
-
-    with pytest.raises(VoiceoverAPIError, match="neither url nor data"):
-        _call_qwen_tts_sync("hello")
-
-
-def test_call_qwen_tts_sync_treats_empty_string_data_as_absent(monkeypatch, tmp_path):
-    """Regression guard for the real confirmed response shape: a live call's
-    `data` key comes back as `""` (empty string), not absent/None, when only
-    `url` is populated -- must not be treated as truthy "real" data."""
-    monkeypatch.setenv("MODEL_TTS", "qwen3-tts-flash")
-    downloaded = tmp_path / "clip.wav"
-    downloaded.write_bytes(b"real-bytes")
-
-    def fake_call(**kwargs):
-        return _FakeResponse(
-            200, output=_FakeOutput(_fake_audio(url="http://tts.example/clip.wav", data=""))
-        )
-
-    monkeypatch.setattr("agents.voiceover_caption_agent.SpeechSynthesizer.call", fake_call)
-    monkeypatch.setattr("agents.voiceover_caption_agent._download_to_temp", lambda url: str(downloaded))
-
-    path = _call_qwen_tts_sync("hello")
-    assert path == str(downloaded)
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +316,49 @@ async def test_generate_voiceover_empty_beats_degrades_gracefully():
     )
     assert voiceover["audio_uri"] == "https://oss.example.invalid/voiceover.mp3"
     assert len(captions) == 1
+
+
+# ---------------------------------------------------------------------------
+# generate_voiceover with directed_beats: spoken_text + emotion + pacing are
+# used to build each beat's CosyVoice fn (verified by patching _make_cosyvoice_fn).
+# ---------------------------------------------------------------------------
+@_skip_no_ffmpeg
+@pytest.mark.asyncio
+async def test_generate_voiceover_uses_directed_beats_spoken_text(tmp_path):
+    """When directed_beats is provided (and no synth_fn injection), each beat
+    uses its spoken_text + emotion + pacing, not the raw winning_script line."""
+    import agents.voiceover_caption_agent as vca_module
+
+    captured = []
+    original_make = vca_module._make_cosyvoice_fn
+
+    def capturing_make(pacing="normal"):
+        async def _fn(text):
+            captured.append({"text": text, "pacing": pacing})
+            return _make_real_audio(tmp_path, f"cap_{len(captured)}.wav", 0.3)
+        return _fn
+
+    vca_module._make_cosyvoice_fn = capturing_make
+    try:
+        directed = [
+            {"beat_index": 0, "spoken_text": "spoken one", "emotion": "excited", "pacing": "fast"},
+            {"beat_index": 1, "spoken_text": "spoken two", "emotion": "warm", "pacing": "normal"},
+        ]
+        vo, caps = await generate_voiceover(
+            _winning_script(["raw line one", "raw line two"]),
+            "test-job",
+            directed_beats=directed,
+            upload_audio_fn=lambda p: "https://oss.example.invalid/voiceover.mp3",
+            upload_captions_fn=lambda p: "https://oss.example.invalid/captions.json",
+        )
+        assert captured[0]["text"] == "spoken one"
+        assert captured[0]["pacing"] == "fast"
+        assert captured[1]["text"] == "spoken two"
+        assert captured[1]["pacing"] == "normal"
+        # captions carry the spoken_text, not the raw line
+        assert [c["text"] for c in caps] == ["spoken one", "spoken two"]
+    finally:
+        vca_module._make_cosyvoice_fn = original_make
 
 
 # ---------------------------------------------------------------------------
