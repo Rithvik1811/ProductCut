@@ -21,3 +21,6 @@ Thumbs.db
 # De-risk test assets/outputs (local sanity checks, not project artifacts)
 backend/derisk/photos/
 backend/derisk/outputs/
+
+# Runtime-generated upload artifacts (saved by POST /jobs at request time)
+backend/uploads/

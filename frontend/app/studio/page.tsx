@@ -249,11 +249,15 @@ export default function StudioPage() {
   const addFiles = useCallback(
     (fileList: FileList | null) => {
       if (!fileList) return;
+      // Snapshot into a plain array now: fileList (e.g. e.target.files) is a live
+      // reference, and callers reset input.value right after calling this, which
+      // clears that same live FileList before the setState updater below runs.
+      const incoming = Array.from(fileList).filter((f) => f.type.startsWith("image/"));
+      if (!incoming.length) return;
       setState((s) => {
         const room = 3 - s.photos.length;
         if (room <= 0) return {};
-        const mapped: Photo[] = Array.from(fileList)
-          .filter((f) => f.type.startsWith("image/"))
+        const mapped: Photo[] = incoming
           .slice(0, room)
           .map((f) => ({ name: f.name, url: URL.createObjectURL(f), file: f }));
         return { photos: [...s.photos, ...mapped].slice(0, 3) };
