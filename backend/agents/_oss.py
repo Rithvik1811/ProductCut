@@ -135,6 +135,24 @@ def upload_video_to_oss(
     return _put_and_sign(key, local_path, "video/mp4", bucket=bucket)
 
 
+def upload_photo_to_oss(
+    local_path: str,
+    job_id: str,
+    filename: str,
+    *,
+    content_type: str = "image/jpeg",
+    bucket: Optional[object] = None,
+) -> str:
+    """Upload a product photo to OSS and return a signed GET URL.
+
+    Key: `jobs/{job_id}/photos/{filename}`.
+    The signed URL is what gets passed to the vision model — DashScope can reach
+    it, unlike a localhost:/uploads/... URL.
+    """
+    key = f"jobs/{job_id}/photos/{filename}"
+    return _put_and_sign(key, local_path, content_type, bucket=bucket)
+
+
 def upload_audio_to_oss(
     local_path: str,
     job_id: str,

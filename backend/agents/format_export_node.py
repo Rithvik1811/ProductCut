@@ -23,8 +23,12 @@ import os
 import tempfile
 
 import ffmpeg
+import psycopg
+from psycopg.rows import dict_row
+from langchain_core.callbacks.manager import adispatch_custom_event
 
 from agents._oss import _download_to_temp, upload_export_to_oss
+from db.jobs import update_job_status
 from graph.state import ProductCutState
 
 logger = logging.getLogger("productcut.agents.format_export_node")
@@ -162,10 +166,30 @@ async def format_export_node(state: ProductCutState) -> dict:
 
     try:
         exports = await generate_format_exports(master_cut_uri, job_id)
-        return {"exports": exports}
     except Exception as exc:
         logger.error(
             "format_export_node: failed to generate exports for job %s: %s",
             job_id, exc, exc_info=True,
         )
         return {}
+
+    # Emit the job_complete C2 event so the frontend Delivery section renders.
+    voiceover = state.get("voiceover")
+    payload: dict = {"master_cut_uri": master_cut_uri, "exports": exports}
+    if voiceover:
+        payload["voiceover"] = voiceover
+    await adispatch_custom_event("job_complete", payload)
+
+    # Update job status to "complete" in RDS (best-effort; never blocks the return).
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        try:
+            conn = await psycopg.AsyncConnection.connect(database_url, row_factory=dict_row)
+            try:
+                await update_job_status(conn, job_id, "complete")
+            finally:
+                await conn.close()
+        except Exception as exc:
+            logger.warning("format_export_node: could not update job status: %s", exc)
+
+    return {"exports": exports}

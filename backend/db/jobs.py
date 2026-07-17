@@ -278,6 +278,20 @@ async def read_job_state(
     return state
 
 
+async def update_job_status(
+    conn: psycopg.AsyncConnection,
+    job_id: str,
+    status: str,
+) -> None:
+    """Update the status column for an existing job row."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE jobs SET status = %s WHERE job_id = %s",
+            (status, job_id),
+        )
+    await conn.commit()
+
+
 async def delete_job(conn: psycopg.AsyncConnection, job_id: str) -> None:
     """Delete a job and (via ON DELETE CASCADE) its `seller_direction` row.
 
@@ -322,6 +336,7 @@ __all__ = [
     "create_job",
     "upsert_seller_direction",
     "read_job_state",
+    "update_job_status",
     "delete_job",
     "list_jobs",
 ]

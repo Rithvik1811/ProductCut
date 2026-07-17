@@ -117,6 +117,7 @@ export interface Shot {
   duration: string;
   fallback: boolean;
   status?: ShotStatus;
+  videoUri?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,10 +150,12 @@ export interface FinalRatio {
   use: string;
   w: number;
   h: number;
+  url?: string;
 }
 
 export interface Final {
   duration: string;
+  masterCutUri?: string;
   ratios: FinalRatio[];
 }
 

@@ -25,14 +25,25 @@ export default function FinalPanel({ final }: FinalPanelProps) {
           Your ad is ready.
         </h2>
         <div data-rid="final-grid" style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 48, alignItems: "start" }}>
-          <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 9", border: "1px solid rgba(249,244,234,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div style={{ width: 56, height: 56, borderRadius: "50%", background: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <span style={{ width: 0, height: 0, borderTop: "10px solid transparent", borderBottom: "10px solid transparent", borderLeft: "16px solid var(--accent-ink)", marginLeft: 4 }} />
-            </div>
-            <span style={{ position: "absolute", bottom: 12, left: 14, fontFamily: "var(--font-mono)", fontSize: 11, color: "rgba(249,244,234,0.5)" }}>
-              preview · master.mp4
+          {/* Master cut preview */}
+          <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 9", border: "1px solid rgba(249,244,234,0.2)", background: "#000", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {final.masterCutUri ? (
+              <video
+                src={final.masterCutUri}
+                controls
+                style={{ width: "100%", height: "100%", objectFit: "contain" }}
+              />
+            ) : (
+              <div style={{ width: 56, height: 56, borderRadius: "50%", background: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <span style={{ width: 0, height: 0, borderTop: "10px solid transparent", borderBottom: "10px solid transparent", borderLeft: "16px solid var(--accent-ink)", marginLeft: 4 }} />
+              </div>
+            )}
+            <span style={{ position: "absolute", bottom: 12, left: 14, fontFamily: "var(--font-mono)", fontSize: 11, color: "rgba(249,244,234,0.5)", pointerEvents: "none" }}>
+              {final.masterCutUri ? "master.mp4" : "preview · master.mp4"}
             </span>
           </div>
+
+          {/* Format exports */}
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {ratioTiles.map((tile) => (
               <div key={tile.id} style={{ display: "flex", alignItems: "center", gap: 14, borderTop: "1px solid rgba(249,244,234,0.16)", paddingTop: 14 }}>
@@ -43,21 +54,44 @@ export default function FinalPanel({ final }: FinalPanelProps) {
                   </div>
                   <div style={{ fontSize: 11, color: "rgba(249,244,234,0.72)", marginTop: 2 }}>{tile.use}</div>
                 </div>
-                <button
-                  className="pcs-final-dl"
-                  style={{
-                    fontFamily: "var(--font-sans)",
-                    fontSize: "11.5px",
-                    fontWeight: 600,
-                    padding: "8px 12px",
-                    border: "1px solid var(--accent)",
-                    background: "transparent",
-                    color: "var(--accent)",
-                    cursor: "pointer",
-                  }}
-                >
-                  ↓
-                </button>
+                {tile.url ? (
+                  <a
+                    href={tile.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      fontFamily: "var(--font-sans)",
+                      fontSize: "11.5px",
+                      fontWeight: 600,
+                      padding: "8px 12px",
+                      border: "1px solid var(--accent)",
+                      background: "transparent",
+                      color: "var(--accent)",
+                      cursor: "pointer",
+                      textDecoration: "none",
+                      flexShrink: 0,
+                    }}
+                  >
+                    ↓
+                  </a>
+                ) : (
+                  <button
+                    className="pcs-final-dl"
+                    disabled
+                    style={{
+                      fontFamily: "var(--font-sans)",
+                      fontSize: "11.5px",
+                      fontWeight: 600,
+                      padding: "8px 12px",
+                      border: "1px solid rgba(249,244,234,0.3)",
+                      background: "transparent",
+                      color: "rgba(249,244,234,0.3)",
+                      cursor: "not-allowed",
+                    }}
+                  >
+                    ↓
+                  </button>
+                )}
               </div>
             ))}
           </div>

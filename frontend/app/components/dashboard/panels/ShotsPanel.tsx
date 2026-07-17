@@ -1,6 +1,5 @@
 "use client";
 
-import type { CSSProperties } from "react";
 import type { Shot, ShotStatus } from "@/lib/types";
 
 interface ShotsPanelProps {
@@ -34,20 +33,27 @@ export default function ShotsPanel({ shots, shotOpenId, onToggle }: ShotsPanelPr
         {shots.map((sh) => {
           const m = statusMeta(sh.status);
           const isFallback = sh.status === "fallback";
-          const isReal = sh.status === "passed";
           const isGenerating = sh.status === "generating" || sh.status === "review" || sh.status === "fallback_requested";
           const open = shotOpenId === sh.id;
-          const thumbBg: CSSProperties = isFallback
-            ? { backgroundColor: "transparent", backgroundImage: "repeating-linear-gradient(45deg, var(--accent) 0 6px, var(--paper) 6px 12px)" }
-            : isReal
-              ? { backgroundColor: "var(--ink)", backgroundImage: "none" }
-              : { backgroundColor: "rgba(18,52,59,0.06)", backgroundImage: "none" };
 
           return (
             <div key={sh.id} onClick={() => onToggle(sh.id)} style={{ border: "1px solid var(--hair-strong)", cursor: "pointer", background: "var(--paper)" }}>
-              <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 10", display: "flex", alignItems: "center", justifyContent: "center", borderBottom: "1px solid var(--hair)", ...thumbBg }}>
-                {isGenerating && (
-                  <span style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid rgba(18,52,59,0.2)", borderTopColor: "var(--accent)", display: "block", animation: "pc-spin 0.75s linear infinite" }} />
+              <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 10", overflow: "hidden", borderBottom: "1px solid var(--hair)", background: "var(--ink)" }}>
+                {sh.videoUri ? (
+                  <video
+                    src={sh.videoUri}
+                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                    muted
+                    loop
+                    autoPlay
+                    playsInline
+                  />
+                ) : isGenerating ? (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
+                    <span style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid rgba(18,52,59,0.2)", borderTopColor: "var(--accent)", display: "block", animation: "pc-spin 0.75s linear infinite" }} />
+                  </div>
+                ) : (
+                  <div style={{ height: "100%", backgroundColor: "rgba(18,52,59,0.06)" }} />
                 )}
                 {isFallback && (
                   <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.4px", color: "var(--ink)", position: "absolute", top: 5, left: 6, background: "var(--paper)", padding: "1px 4px" }}>

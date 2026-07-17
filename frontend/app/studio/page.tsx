@@ -216,6 +216,15 @@ export default function StudioPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-reconnect: if HMR reloads the component while we're mid-job (state preserved
+  // but jobRef.current is null), reopen the WS so run.completed fires the recovery fetch.
+  useEffect(() => {
+    if (state.status === "dashboard" && state.jobId && !state.jobDone && !jobRef.current) {
+      openWebSocket(state.jobId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.status, state.jobId, state.jobDone]);
+
   const toggleTheme = useCallback(() => {
     setState((s) => {
       const theme: Theme = s.theme === "dark" ? "light" : "dark";
@@ -448,12 +457,15 @@ export default function StudioPage() {
         case "shot_generated": {
           // C2: {shot_id, generated?, status, is_fallback}
           const { shot_id, status, is_fallback } = payload;
+          const videoUri = payload.generated?.video_uri;
           setState((s) => {
             const exists = s.shots.find((sh) => sh.id === shot_id);
             if (exists) {
               return {
                 shots: s.shots.map((sh) =>
-                  sh.id === shot_id ? { ...sh, status, fallback: is_fallback } : sh
+                  sh.id === shot_id
+                    ? { ...sh, status, fallback: is_fallback, ...(videoUri ? { videoUri } : {}) }
+                    : sh
                 ),
               };
             }
@@ -465,6 +477,7 @@ export default function StudioPage() {
               duration: "",
               fallback: is_fallback,
               status,
+              ...(videoUri ? { videoUri } : {}),
             };
             return { shots: [...s.shots, newShot] };
           });
@@ -502,7 +515,13 @@ export default function StudioPage() {
             clearInterval(elapsedIntervalRef.current);
             elapsedIntervalRef.current = null;
           }
-          const final: Final = { duration: "18s", ratios: FINAL_RATIOS };
+          const { master_cut_uri, exports: ex } = payload;
+          const ratiosWithUrls: Final["ratios"] = [
+            { ...FINAL_RATIOS[0], url: ex?.aspect_9x16 },
+            { ...FINAL_RATIOS[1], url: ex?.aspect_1x1 },
+            { ...FINAL_RATIOS[2], url: ex?.aspect_16x9 },
+          ];
+          const final: Final = { duration: "18s", masterCutUri: master_cut_uri, ratios: ratiosWithUrls };
           setState((s) => {
             const entry: HistoryEntry = {
               productName: s.brief || "Product Ad",
@@ -551,8 +570,40 @@ export default function StudioPage() {
       ws.onmessage = (event: MessageEvent) => {
         try {
           const msg: { type: string; payload: unknown } = JSON.parse(event.data as string);
-          // Skip transport lifecycle events — not part of C2
-          if (msg.type === "run.started" || msg.type === "run.completed") return;
+          if (msg.type === "run.started") return;
+          if (msg.type === "run.completed") {
+            // If the pipeline finished before we connected (e.g. page reload / WS reconnect),
+            // the graph emits run.completed immediately with no business events. Fall back to
+            // the REST state endpoint to reconstruct the delivery section.
+            setState((s) => {
+              if (s.jobDone) return {};  // already have delivery data
+              return {};
+            });
+            const apiBase = getApiBase();
+            fetch(`${apiBase}/jobs/${jobId}/state`)
+              .then((r) => r.json())
+              .then((data: { state?: Record<string, unknown>; next?: string[] }) => {
+                const st = data.state;
+                if (!st) return;
+                const masterCutUri = st["master_cut_uri"] as string | undefined;
+                const ex = st["exports"] as { aspect_9x16?: string; aspect_1x1?: string; aspect_16x9?: string } | undefined;
+                if (masterCutUri && ex) {
+                  handleEvent({
+                    type: "job_complete",
+                    payload: {
+                      master_cut_uri: masterCutUri,
+                      exports: {
+                        aspect_9x16: ex.aspect_9x16 ?? "",
+                        aspect_1x1: ex.aspect_1x1 ?? "",
+                        aspect_16x9: ex.aspect_16x9 ?? "",
+                      },
+                    },
+                  });
+                }
+              })
+              .catch(() => { /* best-effort */ });
+            return;
+          }
           if (msg.type === "run.error") {
             console.error("[ProductCut] graph error:", (msg.payload as Record<string, unknown>)?.error);
             return;

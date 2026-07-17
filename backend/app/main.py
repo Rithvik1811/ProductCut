@@ -207,11 +207,25 @@ async def _save_photos(photos: list[UploadFile], job_id: str) -> list[str]:
         return refs
     job_dir = UPLOADS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+
+    from agents._oss import upload_photo_to_oss
+
+    _CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+
     for photo in valid:
         safe = Path(photo.filename).name  # type: ignore[arg-type]
         content = await photo.read()
-        (job_dir / safe).write_bytes(content)
-        refs.append(f"{BACKEND_BASE_URL}/uploads/{job_id}/{safe}")
+        local_path = job_dir / safe
+        local_path.write_bytes(content)
+        suffix = Path(safe).suffix.lower()
+        content_type = _CONTENT_TYPES.get(suffix, "image/jpeg")
+        try:
+            oss_url = upload_photo_to_oss(str(local_path), job_id, safe, content_type=content_type)
+            refs.append(oss_url)
+        except Exception as exc:
+            # Fallback to localhost URL if OSS is unavailable (dev without OSS creds)
+            logger.warning("OSS photo upload failed for %s — falling back to localhost URL: %s", safe, exc)
+            refs.append(f"{BACKEND_BASE_URL}/uploads/{job_id}/{safe}")
     return refs
 
 
