@@ -29,6 +29,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, get_args
 
+from dotenv import load_dotenv
+
+# Unlike the derisk/ scripts, this app was never loading backend/.env: every
+# os.environ.get() below (and DATABASE_URL, DASHSCOPE_*, etc. read deeper in
+# graph/build.py and the agents) silently saw nothing unless the caller
+# exported vars manually or passed `uvicorn --env-file`.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 from fastapi import FastAPI, File, Form, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
