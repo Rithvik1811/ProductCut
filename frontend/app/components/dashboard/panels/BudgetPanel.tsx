@@ -23,11 +23,11 @@ export default function BudgetPanel({ budget, budgetOpenId, onToggle }: BudgetPa
           Budget
         </span>
         <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink)" }}>
-          {bRun} / {budget.cap || 0}
+          ${bRun.toFixed(2)} / ${(budget.cap || 0).toFixed(2)}
         </span>
       </div>
       <div style={{ height: 3, background: "rgba(18,52,59,0.14)", marginBottom: 4 }}>
-        <div style={{ height: "100%", width: `${bPct}%`, background: budgetColor, transition: "width .6s var(--ease)" }} />
+        <div style={{ height: "100%", width: "100%", background: budgetColor, transform: `scaleX(${bPct / 100})`, transformOrigin: "left", transition: "transform .6s var(--ease)" }} />
       </div>
       <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 600, color: "var(--ink-soft)", marginBottom: 16 }}>
         {budgetStateLabel}
