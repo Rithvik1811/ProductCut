@@ -13,8 +13,7 @@ import type {
   Treatment,
   Truth,
 } from "@/lib/types";
-
-const PHASES = ["Ingest", "Truths", "Scripts", "Treatment", "Budget", "Shots", "Continuity", "Delivery"];
+import { PHASES, PHASE_RUNNING_LABEL, estimateDuration } from "@/lib/phases";
 import TruthsPanel from "./panels/TruthsPanel";
 import ScriptsPanel from "./panels/ScriptsPanel";
 import TreatmentPanel from "./panels/TreatmentPanel";
@@ -24,8 +23,7 @@ import ContinuityPanel from "./panels/ContinuityPanel";
 import FinalPanel from "./panels/FinalPanel";
 
 export interface DashboardProps {
-  phase: string;
-  phaseLabel: string;
+  maxPhaseIdx: number;
   elapsed: number;
   jobDone: boolean;
   onResetPipeline: () => void;
@@ -75,8 +73,7 @@ function formatElapsed(ms: number): string {
 
 export default function Dashboard(props: DashboardProps) {
   const {
-    phase,
-    phaseLabel,
+    maxPhaseIdx,
     elapsed,
     jobDone,
     onResetPipeline,
@@ -109,8 +106,11 @@ export default function Dashboard(props: DashboardProps) {
     jobId,
   } = props;
 
-  const curPhaseIdx = PHASES.indexOf(phase);
-  const jobStatusLine = jobDone ? `Job complete · ${truths.length} truths · winning cut delivered` : phaseLabel || "Starting…";
+  // -1 (nothing received yet) reads as "Ingest in progress", the real starting state.
+  const curPhaseIdx = Math.max(0, Math.min(maxPhaseIdx, PHASES.length - 1));
+  const jobStatusLine = jobDone
+    ? `Job complete · ${truths.length} truths · winning cut delivered`
+    : PHASE_RUNNING_LABEL[PHASES[curPhaseIdx]];
 
   const hasTruths = truths.length > 0;
   const hasScripts = scripts.length > 0;
@@ -120,6 +120,17 @@ export default function Dashboard(props: DashboardProps) {
   const hasDriftPanel = hasInterrupt || Object.keys(drift).length > 0 || !!interruptResolution;
   const hasOps = hasBudget || hasShots || hasDriftPanel;
   const historyCountLabel = historyCount ? ` (${historyCount})` : "";
+
+  // Progress: completed-stages/8, refined within the Shots stage using real
+  // per-shot status once the total shot count is known from the budget ledger.
+  const shotCount = budget.shots.length || shots.length;
+  let stageFraction = 0;
+  if (!jobDone && curPhaseIdx === PHASES.indexOf("Shots") && shotCount > 0) {
+    const doneShots = shots.filter((s) => s.status === "passed" || s.status === "fallback").length;
+    stageFraction = Math.min(doneShots / shotCount, 1);
+  }
+  const progress = jobDone ? 1 : (curPhaseIdx + stageFraction) / PHASES.length;
+  const estimateLabel = estimateDuration(shotCount);
 
   return (
     <div>
@@ -137,18 +148,23 @@ export default function Dashboard(props: DashboardProps) {
             style={{ flex: 1, display: "flex", alignItems: "center", gap: 10, justifyContent: "center", flexWrap: "wrap", fontFamily: "var(--font-sans)", fontSize: 12, letterSpacing: "0.3px", position: "relative" }}
           >
             {PHASES.map((p, i) => {
+              // done/active/not-started are derived only from curPhaseIdx, which
+              // itself only ever advances on a real C2 event (see studio/page.tsx's
+              // maxPhaseIdx) — a stage with no event yet always reads not-started.
               const done = jobDone || i < curPhaseIdx;
               const active = !jobDone && i === curPhaseIdx;
+              const notStarted = !done && !active;
               const color = active ? "var(--ink)" : done ? "var(--ink-soft)" : "var(--faint)";
               return (
                 <span
                   key={p}
                   style={{
                     color,
-                    fontWeight: active ? 700 : 400,
+                    fontWeight: done ? 700 : 400,
                     textDecorationLine: active ? "underline" : "none",
                     textDecorationColor: "var(--accent)",
                     textUnderlineOffset: 4,
+                    opacity: notStarted ? 0.55 : 1,
                   }}
                 >
                   {p}
@@ -158,7 +174,20 @@ export default function Dashboard(props: DashboardProps) {
             <div data-rid="phase-fade" style={{ display: "none", position: "absolute", right: 0, top: 0, bottom: 0, width: 28, background: "linear-gradient(90deg, transparent, var(--paper))", pointerEvents: "none" }} />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: "12.5px", color: "var(--ink-soft)" }}>{formatElapsed(elapsed)}</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: jobDone ? undefined : 150 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, fontFamily: "var(--font-mono)", fontSize: "12.5px", color: "var(--ink-soft)", whiteSpace: "nowrap" }}>
+                <span>{formatElapsed(elapsed)}</span>
+                {!jobDone && <span style={{ color: "var(--faint)", fontSize: 11 }}>/ {estimateLabel}</span>}
+              </div>
+              {!jobDone && (
+                <div data-rid="progress-bar-track" style={{ width: "100%", height: 3, background: "var(--hair)", overflow: "hidden" }}>
+                  <div
+                    data-rid="progress-bar-fill"
+                    style={{ height: "100%", width: `${Math.round(progress * 100)}%`, background: "var(--accent)", transition: "width .5s var(--ease)" }}
+                  />
+                </div>
+              )}
+            </div>
             <Link
               href="/"
               className="pcs-hover-ink"

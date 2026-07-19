@@ -2,7 +2,7 @@
 
 import type { KeyboardEvent } from "react";
 import type { MergeValidation, Script } from "@/lib/types";
-import { SCORE_META } from "../shared";
+import { SCORE_META, SCORE_MAX } from "../shared";
 
 interface ScriptsPanelProps {
   scripts: Script[];
@@ -38,7 +38,7 @@ export default function ScriptsPanel({
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 34 }}>
               {winner?.lines.map((line, i) => (
-                <div key={i} style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "clamp(24px, 3vw, 34px)", lineHeight: 1.35 }}>
+                <div key={i} style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "clamp(24px, 3vw, 34px)", lineHeight: 1.35, textAlign: "left" }}>
                   {line}
                 </div>
               ))}
@@ -50,13 +50,13 @@ export default function ScriptsPanel({
                 <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: "rgba(249,244,234,0.72)", marginBottom: 12 }}>
                   Merge validation · {merge.status.toUpperCase()} · {merge.repairPath}
                 </div>
-                <p style={{ margin: "0 0 16px", fontSize: 13, lineHeight: 1.6, color: "rgba(249,244,234,0.72)", maxWidth: "60ch" }}>{merge.note}</p>
+                <p style={{ margin: "0 0 16px", fontSize: 13, lineHeight: 1.6, color: "rgba(249,244,234,0.72)", maxWidth: "60ch", textAlign: "left" }}>{merge.note}</p>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                   <div>
                     <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "rgba(249,244,234,0.7)", marginBottom: 6 }}>
                       Before
                     </div>
-                    <p style={{ margin: 0, fontSize: "12.5px", lineHeight: 1.6, color: "rgba(249,244,234,0.55)", textDecorationLine: "line-through", textDecorationColor: "rgba(249,244,234,0.25)" }}>
+                    <p style={{ margin: 0, fontSize: "12.5px", lineHeight: 1.6, color: "rgba(249,244,234,0.55)", textDecorationLine: "line-through", textDecorationColor: "rgba(249,244,234,0.25)", textAlign: "left" }}>
                       {merge.seam.before}
                     </p>
                   </div>
@@ -64,7 +64,7 @@ export default function ScriptsPanel({
                     <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--accent)", marginBottom: 6 }}>
                       After
                     </div>
-                    <p style={{ margin: 0, fontSize: "12.5px", lineHeight: 1.6, color: "rgba(249,244,234,0.92)" }}>{merge.seam.after}</p>
+                    <p style={{ margin: 0, fontSize: "12.5px", lineHeight: 1.6, color: "rgba(249,244,234,0.92)", textAlign: "left" }}>{merge.seam.after}</p>
                   </div>
                 </div>
                 <div style={{ marginTop: 14, fontFamily: "var(--font-mono)", fontSize: 11, color: "rgba(249,244,234,0.45)" }}>
@@ -130,12 +130,19 @@ export default function ScriptsPanel({
                       <span>{m.label}</span>
                       <span style={{ fontFamily: "var(--font-mono)" }}>{activeScript.scores[m.key]}</span>
                     </div>
-                    <div style={{ height: 2, background: "rgba(249,244,234,0.14)" }}>
-                      <div style={{ height: "100%", width: `${activeScript.scores[m.key]}%`, background: "var(--accent)", transition: "width .6s var(--ease)" }} />
+                    <div style={{ height: 2, background: "rgba(249,244,234,0.14)", overflow: "hidden" }}>
+                      <div
+                        style={{
+                          height: "100%",
+                          width: `${Math.min((activeScript.scores[m.key] / SCORE_MAX) * 100, 100)}%`,
+                          background: "var(--accent)",
+                          transition: "width .6s var(--ease)",
+                        }}
+                      />
                     </div>
                   </div>
                 ))}
-              <p style={{ margin: "14px 0 0", fontSize: 12, lineHeight: 1.6, color: "rgba(249,244,234,0.72)" }}>
+              <p style={{ margin: "14px 0 0", fontSize: 12, lineHeight: 1.6, color: "rgba(249,244,234,0.72)", textAlign: "left" }}>
                 {activeScript ? activeScript.reasoning : ""}
               </p>
             </div>

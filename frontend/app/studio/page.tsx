@@ -21,38 +21,11 @@ import type {
   Truth,
 } from "@/lib/types";
 import { useMergeState } from "@/lib/useMergeState";
+import { PHASES, NODE_TO_PHASE } from "@/lib/phases";
 import "./studio.css";
 
 const STEP_MS = 340;
 const HISTORY_KEY = "pc-job-history";
-
-// Map LangGraph node names → pipeline phase display strings.
-// Keys must match the compiled node names emitted on on_chain_start events.
-const NODE_TO_PHASE: Record<string, string> = {
-  brand_research_node: "Ingest",
-  product_truth_extractor: "Truths",
-  concept_agent: "Scripts",
-  hook_checker: "Scripts",
-  pacing_checker: "Scripts",
-  body_checker: "Scripts",
-  cta_checker: "Scripts",
-  tone_checker: "Scripts",
-  meta_critic: "Scripts",
-  merge_validator: "Scripts",
-  copy_editor: "Scripts",
-  visual_direction_agent: "Treatment",
-  treatment_agent: "Treatment",
-  shot_list_agent: "Budget",
-  budget_gate: "Budget",
-  video_gen: "Shots",           // Bug 8: was "video_gen_node" — wrong compiled name
-  ken_burns_fallback: "Shots",  // Bug 8: was "ken_burns_fallback_node"
-  continuity_agent: "Continuity",
-  continuity_gate: "Continuity",
-  voice_direction_agent: "Delivery",
-  voiceover_caption_agent: "Delivery",
-  assembly_agent: "Delivery",
-  format_export_node: "Delivery",
-};
 
 const FINAL_RATIOS: Final["ratios"] = [
   { id: "9x16", label: "9:16", use: "TikTok / Reels", w: 9, h: 16 },
@@ -74,15 +47,16 @@ interface State {
   brief: string;
   moodWords: string[];
   moodInput: string;
-  refLink: string;
   neverList: string[];
   neverInput: string;
   notes: string;
   dragOver: boolean;
 
   jobId: string | null;
-  phase: string;
-  phaseLabel: string;
+  // Highest pipeline stage index (into PHASES) any real C2 event has proven
+  // reached; -1 = nothing received yet. Never guessed ahead of real events —
+  // see handleEvent's phase bumps below.
+  maxPhaseIdx: number;
   elapsed: number;
   jobDone: boolean;
 
@@ -124,15 +98,13 @@ function initialState(): State {
     brief: "",
     moodWords: [],
     moodInput: "",
-    refLink: "",
     neverList: [],
     neverInput: "",
     notes: "",
     dragOver: false,
 
     jobId: null,
-    phase: "",
-    phaseLabel: "",
+    maxPhaseIdx: -1,
     elapsed: 0,
     jobDone: false,
 
@@ -356,7 +328,6 @@ export default function StudioPage() {
     },
     [state.brief, goStep],
   );
-  const onRefInput = useCallback((e: ChangeEvent<HTMLInputElement>) => setState({ refLink: e.target.value }), [setState]);
   const onNotesInput = useCallback(
     (e: ChangeEvent<HTMLTextAreaElement>) => setState({ notes: e.target.value }),
     [setState],
@@ -392,14 +363,22 @@ export default function StudioPage() {
 
   // ---- C2 event handler ----
   // Adapts real backend C2 payloads into the State shape that Dashboard components render.
+  // Monotonic max: only ever advances, and only in response to a real event —
+  // never lets a later-arriving event regress an earlier, already-proven stage.
+  const bumpPhase = useCallback(
+    (idx: number) => setState((s) => (idx > s.maxPhaseIdx ? { maxPhaseIdx: idx } : {})),
+    [setState],
+  );
+
   const handleEvent = useCallback(
     (e: JobEvent) => {
       const { type, payload } = e;
       switch (type) {
         case "node_started": {
-          const phase = NODE_TO_PHASE[payload.node] ?? payload.node;
-          const phaseLabel = payload.label ?? phase;
-          setState({ phase, phaseLabel });
+          // Not currently emitted by the real backend (see lib/phases.ts), but
+          // respected if it ever is, via the same real-event-only cascade.
+          const phase = NODE_TO_PHASE[payload.node];
+          if (phase) bumpPhase(PHASES.indexOf(phase));
           break;
         }
 
@@ -411,6 +390,7 @@ export default function StudioPage() {
             fact_text: t.fact,
           }));
           setState((s) => ({ truths: [...s.truths, ...truths] }));
+          bumpPhase(PHASES.indexOf("Truths"));
           break;
         }
 
@@ -440,6 +420,7 @@ export default function StudioPage() {
             winnerId: firstWinner ?? s.winnerId,
             activeScriptId: firstWinner ?? s.activeScriptId,
           }));
+          bumpPhase(PHASES.indexOf("Scripts"));
           break;
         }
 
@@ -460,6 +441,7 @@ export default function StudioPage() {
               },
             },
           });
+          bumpPhase(PHASES.indexOf("Scripts"));
           break;
         }
 
@@ -479,6 +461,7 @@ export default function StudioPage() {
               })),
             },
           });
+          bumpPhase(PHASES.indexOf("Treatment"));
           break;
         }
 
@@ -501,6 +484,7 @@ export default function StudioPage() {
               },
             };
           });
+          bumpPhase(PHASES.indexOf("Budget"));
           break;
         }
 
@@ -531,6 +515,7 @@ export default function StudioPage() {
             };
             return { shots: [...s.shots, newShot] };
           });
+          bumpPhase(PHASES.indexOf("Shots"));
           break;
         }
 
@@ -543,6 +528,7 @@ export default function StudioPage() {
             // interrupt for this shot after re-generation must not be suppressed.
             lastResolvedShotId: s.lastResolvedShotId === payload.shot_id ? null : s.lastResolvedShotId,
           }));
+          bumpPhase(PHASES.indexOf("Continuity"));
           break;
         }
 
@@ -564,6 +550,7 @@ export default function StudioPage() {
             };
             return { interrupt };
           });
+          bumpPhase(PHASES.indexOf("Continuity"));
           break;
         }
 
@@ -590,8 +577,9 @@ export default function StudioPage() {
             };
             const history = [entry, ...s.history.filter(h => h.jobId !== entry.jobId)].slice(0, 20);
             try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch { /* ignore */ }
-            return { final, jobDone: true, phase: "Delivery", history };
+            return { final, jobDone: true, history };
           });
+          bumpPhase(PHASES.indexOf("Delivery"));
           break;
         }
 
@@ -605,7 +593,7 @@ export default function StudioPage() {
           break;
       }
     },
-    [setState],
+    [setState, bumpPhase],
   );
 
   // ---- WebSocket connection ----
@@ -772,7 +760,6 @@ export default function StudioPage() {
     const formData = new FormData();
     formData.append("brief", state.brief);
     if (state.moodWords.length) formData.append("mood_words", JSON.stringify(state.moodWords));
-    if (state.refLink) formData.append("reference_ad", state.refLink);
     if (state.neverList.length) formData.append("never_do", state.neverList.join(", "));
     if (state.notes) formData.append("notes", state.notes);
     state.photos.forEach((photo) => {
@@ -926,8 +913,7 @@ export default function StudioPage() {
       setState({
         status: "dashboard",
         jobDone: true,
-        phase: "Delivery",
-        phaseLabel: "",
+        maxPhaseIdx: PHASES.length - 1,
         truths,
         scripts: [],
         activeScriptId: null,
@@ -1005,8 +991,6 @@ export default function StudioPage() {
           onMoodInput={onMoodInput}
           onMoodKey={onMoodKey}
           onRemoveMood={(i) => removeTag("moodWords", i)}
-          refLink={state.refLink}
-          onRefInput={onRefInput}
           neverList={state.neverList}
           neverInput={state.neverInput}
           onNeverInput={onNeverInput}
@@ -1055,8 +1039,7 @@ export default function StudioPage() {
 
       {state.status === "dashboard" && (
         <Dashboard
-          phase={state.phase}
-          phaseLabel={state.phaseLabel}
+          maxPhaseIdx={state.maxPhaseIdx}
           elapsed={state.elapsed}
           jobDone={state.jobDone}
           onResetPipeline={resetPipeline}
