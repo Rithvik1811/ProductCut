@@ -90,6 +90,7 @@ from graph.state import (
 EventType = Literal[
     "node_started",
     "truth_extracted",
+    "research_complete",  # v13: Product Web Research node finished
     "critic_score",
     "treatment_ready",
     "budget_updated",
@@ -121,6 +122,15 @@ class TruthExtractedPayload(TypedDict):
     """Product Truth Extractor produced its grounded facts."""
     truths: list[ProductTruth]
     count: int  # len(truths); handy for the dashboard's "N facts found" badge
+
+
+class ResearchCompletePayload(TypedDict):
+    """Product Web Research node finished (v13). Fires only when research was
+    actually performed (TAVILY_API_KEY present and product classified as
+    research_needed). Skipped products don't emit this event."""
+    fact_count: int  # number of ResearchFacts extracted after grounding check
+    product_name: str  # the product name the queries were built around
+    queries: list[str]  # the 1-3 Tavily queries that were run
 
 
 class CriticScorePayload(TypedDict):
@@ -209,6 +219,7 @@ class MasterCutReadyPayload(TypedDict):
 EventPayload = Union[
     NodeStartedPayload,
     TruthExtractedPayload,
+    ResearchCompletePayload,
     CriticScorePayload,
     TreatmentReadyPayload,
     BudgetUpdatedPayload,

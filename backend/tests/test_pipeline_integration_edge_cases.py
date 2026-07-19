@@ -53,6 +53,8 @@ from graph.build import build_graph
 from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
 from tests._phase3_graph import (
     patch_assembly_boundaries,
+    patch_continuity_boundaries,
+    patch_format_export_boundaries,
     patch_phase3_boundaries,
     patch_visual_direction_boundaries,
     patch_voiceover_boundaries,
@@ -98,8 +100,10 @@ def _patch_all_boundaries(monkeypatch, *, call_a: str, call_b: str) -> None:
     )
     patch_visual_direction_boundaries(monkeypatch)
     patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
+    patch_continuity_boundaries(monkeypatch)  # Phase 4: clean drift, no retry loop
     patch_voiceover_boundaries(monkeypatch)  # Phase 5: parallel branch off merge_validator
     patch_assembly_boundaries(monkeypatch)  # Phase 5: fan-in join off voiceover + continuity_gate
+    patch_format_export_boundaries(monkeypatch)  # Phase 6: format exports without real ffmpeg/OSS
 
 
 async def _run_graph(monkeypatch, *, cap: float, call_a: str, call_b: str):

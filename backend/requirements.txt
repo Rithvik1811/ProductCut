@@ -37,6 +37,9 @@ Pillow>=11.1.0               # product photo preprocessing/validation before Tru
 # --- HTTP / async utilities ----------------------------------------------------
 httpx>=0.28.1
 tenacity>=9.0.0              # retry/backoff for Qwen and video-gen API calls
+tavily-python>=0.5.0         # AsyncTavilyClient: web search for product specs/features
+                              # (agents/product_research_node.py) + brand page extraction
+                              # (agents/brand_research_node.py, previously an implicit dep)
 
 # --- Text/NLP utilities ---------------------------------------------------------
 pronouncing>=0.2.0           # CMU Pronouncing Dictionary wrapper; deterministic anti-rhyme

@@ -34,6 +34,7 @@ from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
 from tests._phase3_graph import (
     patch_assembly_boundaries,
     patch_continuity_boundaries,
+    patch_format_export_boundaries,
     patch_phase3_boundaries,
     patch_visual_direction_boundaries,
     patch_voiceover_boundaries,
@@ -87,6 +88,7 @@ async def test_full_critic_chain_runs_fanout_fanin_in_graph(monkeypatch):
     patch_continuity_boundaries(monkeypatch)  # Phase 4: clean drift, loop ends at once
     patch_voiceover_boundaries(monkeypatch)  # Phase 5: parallel branch off merge_validator
     patch_assembly_boundaries(monkeypatch)  # Phase 5: fan-in join off voiceover + continuity_gate
+    patch_format_export_boundaries(monkeypatch)  # Phase 6: format exports without real ffmpeg/OSS
 
     graph = await build_graph()
     initial_state = {
@@ -114,11 +116,13 @@ async def test_full_critic_chain_runs_fanout_fanin_in_graph(monkeypatch):
         "truth_extracted",
         "critic_score",
         "merge_validated",
+        "treatment_ready",  # Concept Agent re-prompt event
         "budget_updated",
         "shot_generated",
         "drift_scored",  # Phase 4: Continuity Agent scored every real clip
         "vo_ready",  # Phase 5: Voiceover + Caption Agent's parallel branch
         "master_cut_ready",  # Phase 5: Assembly Agent's fan-in join
+        "job_complete",  # Phase 6: Format Export node signals delivery
     }, names
     truth_event = next(e for e in custom_events if e["name"] == "truth_extracted")
     assert truth_event["data"]["count"] == len(GOOD_FACTS)

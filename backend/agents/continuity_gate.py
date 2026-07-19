@@ -1,7 +1,16 @@
 """
-Continuity Gate -- capped retry + human-in-the-loop (Phase 4).
+Continuity Gate -- capped retry + autonomous auto-accept (Phase 4).
 Spec of record: docs/TECHNICAL_DOCUMENTATION.md §5.10 (control flow / failure
-handling) and §2.4's C4 (human-review) contract.
+handling).
+
+AUTONOMY NOTE (current behavior). This pipeline is FULLY AUTONOMOUS: there is
+no human-in-the-loop. The retry-exhausted branch below no longer calls
+LangGraph's `interrupt()` -- it auto-accepts the best-available generated clip
+instead. Ken-Burns static-image fallback is reserved for HARD failures (a
+Video-Gen infra/API failure, or two consecutive hard-identity failures), NOT
+for continuity-quality drift. The `interrupt()`/human-review machinery once
+described here (and the `_apply_resolution` helper / `HumanReviewEntry` type,
+kept below only for backward reference) is no longer wired into the node.
 
 WHAT THIS IS FOR. Turn the drift scores the Continuity Agent
 (agents/continuity_agent.py) already wrote into DECISIONS. For every real
@@ -20,13 +29,11 @@ WHAT THIS IS FOR. Turn the drift scores the Continuity Agent
      retry budget for quality-driven drift retries per §5.8/§5.9.
 
   3. Drift over threshold AND retries exhausted (`retry_count >= MAX_AUTO_RETRIES`)
-     -> a genuine LangGraph `interrupt()` (NOT a dead-end flag). We append a
-     HumanReviewEntry to `state["human_review_queue"]`, emit an
-     `interrupt_requested` C2 event, then call `interrupt(review_entry)`. The
-     graph checkpoints and pauses; the flagged shot surfaces to whoever is
-     watching the run. When the human resumes with a resolution, the graph
-     resumes FROM THE CHECKPOINT (this node re-runs -- see the rerun note below)
-     and we apply their choice.
+     -> AUTO-ACCEPT the best-available clip. Keep `status="passed"` and stamp the
+     clip's generated_shots entry with `CONTINUITY_APPROVED_KEY` so a later loop
+     pass (driven by a different shot) doesn't re-evaluate this still-over-
+     threshold clip. No `interrupt()`, no human review, no Ken-Burns -- the shot
+     flows straight to Assembly with the closest generation we could produce.
 
 THE INTERRUPT RE-RUN CONTRACT (why the scoring is in the PREVIOUS node). On
 resume, LangGraph re-executes this ENTIRE node from the top; each prior
@@ -156,9 +163,7 @@ import logging
 import os
 from typing import Optional
 
-from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.runnables import RunnableConfig
-from langgraph.types import interrupt
 
 # DRIFT_THRESHOLD is owned by the scorer (single source of truth). SUCCESS_STATUS
 # ("passed") and FALLBACK_REQUESTED_STATUS ("fallback_requested") are reused from
@@ -171,7 +176,7 @@ logger = logging.getLogger("productcut.agents.continuity_gate")
 
 # §5.10's "retry_count < 2" automatic-retry cap. Env-overridable (budget_gate.py
 # DEFAULT_JOB_BUDGET_CAP pattern) -- bounds UNSUPERVISED regeneration spend.
-MAX_AUTO_RETRIES = int(os.getenv("CONTINUITY_MAX_AUTO_RETRIES", "2"))
+MAX_AUTO_RETRIES = int(os.getenv("CONTINUITY_MAX_AUTO_RETRIES", "3"))
 
 # Existing frozen Shot.status values (graph/state.py). "pending" is what
 # Video-Gen's filter treats as "(re-)generate"; "review" is the previously-unused
@@ -239,19 +244,24 @@ def _apply_resolution(shot: Shot, resolution) -> Shot:
 
 
 # ---------------------------------------------------------------------------
-# LangGraph node wrapper (this IS the node that calls interrupt()).
+# LangGraph node wrapper (fully autonomous -- no interrupt / human review).
 # ---------------------------------------------------------------------------
 async def continuity_gate_node(
     state: ProductCutState,
     config: Optional[RunnableConfig] = None,
 ) -> dict:
-    """LangGraph node: apply §5.10's three-way drift decision to every scored
-    `passed` shot, including a real `interrupt()` for retry-exhausted shots.
+    """LangGraph node: apply the drift decision to every scored `passed` shot.
 
-    Returns updated `shot_list` (statuses/retry_counts patched), the updated
-    `human_review_queue` (new review entries appended), and `reasoning_trace`.
-    Re-run-safe on resume: rebuilt from the entry state each execution (see the
-    module docstring's interrupt re-run contract), so nothing is doubled.
+    Fully autonomous -- there is NO human-in-the-loop `interrupt()`. Over-threshold
+    shots are auto-retried up to MAX_AUTO_RETRIES times; once those retries are
+    exhausted the best-available generated clip is AUTO-ACCEPTED as-is (stamped
+    with CONTINUITY_APPROVED_KEY, kept `status="passed"`), never routed to the
+    Ken-Burns static-image fallback. (Ken-Burns remains reserved for hard infra
+    failures raised by Video-Gen itself, and for the two-consecutive hard-identity
+    failure path below.)
+
+    Returns updated `shot_list` (statuses/retry_counts patched), the (unchanged)
+    `human_review_queue` passed through, and `reasoning_trace`.
     """
     shots = state.get("shot_list", [])
     generated = state.get("generated_shots", {})
@@ -346,48 +356,23 @@ async def continuity_gate_node(
             )
             continue
 
-        # Retries exhausted -> genuine human-review interrupt (§5.10 / C4).
-        review_entry: HumanReviewEntry = {
-            "shot_id": shot_id,
-            "drift_score": drift,
-            # candidate_frame_uris: the clip itself (a reviewer can scrub it) --
-            # see continuity_agent.py's note on deliberately NOT persisting a
-            # separate still for the hackathon scope.
-            "candidate_frame_uris": [entry["video_uri"]],
-        }
-        queue_position = len(review_queue)
-        review_queue.append(review_entry)
+        # Retries exhausted -> auto-accept the best available clip.
+        # The pipeline is fully autonomous; Ken Burns is only for hard infra failures.
+        # Stamp the clip's entry with CONTINUITY_APPROVED_KEY so later loop passes
+        # (driven by another shot) don't re-evaluate this still-over-threshold clip,
+        # and keep status="passed" so it flows straight to Assembly.
+        updated_shots.append({**shot, "status": SUCCESS_STATUS})
+        generated_updates[shot_id] = {**entry, CONTINUITY_APPROVED_KEY: True}
         n_review += 1
-
-        await adispatch_custom_event(
-            "interrupt_requested",
-            {"review": review_entry, "queue_position": queue_position},
-            config=config,
-        )
         logger.warning(
             "Continuity Gate: shot %s drift %.3f > %.3f, retries exhausted "
-            "(retry_count=%d) -> raising human-review interrupt (queue pos %d).",
-            shot_id, drift, DRIFT_THRESHOLD, retry_count, queue_position,
+            "(retry_count=%d) -> auto-accepting best available clip.",
+            shot_id, drift, DRIFT_THRESHOLD, retry_count,
         )
-
-        # PAUSES here on first pass; on resume returns the human's resolution and
-        # execution continues (see module docstring's interrupt re-run contract).
-        resolution = interrupt(review_entry)
-        resolved_shot = _apply_resolution(shot, resolution)
-        updated_shots.append(resolved_shot)
-        # A human "approve" leaves the shot "passed" with its drift_score still
-        # over threshold; stamp its clip entry so a later loop pass doesn't re-
-        # review it (see CONTINUITY_APPROVED_KEY). Only "approve" both stays
-        # "passed" AND keeps an over-threshold drift, so only it needs the marker:
-        # retry_with_edit -> "pending" (regenerated, entry replaced),
-        # accept_fallback -> "fallback_requested" (re-rendered), unknown ->
-        # "review" (not "passed"); none of those linger as a passed+drifted clip.
-        if resolved_shot.get("status") == SUCCESS_STATUS:
-            generated_updates[shot_id] = {**entry, CONTINUITY_APPROVED_KEY: True}
 
     trace_note = (
         f"\n[continuity_gate] {n_within} shot(s) within drift threshold; "
-        f"{n_retry} auto-retried; {n_review} sent to human review; "
+        f"{n_retry} auto-retried; {n_review} auto-accepted (retries exhausted); "
         f"{n_identity_retry} auto-retried for a HARD IDENTITY failure; "
         f"{n_identity_fallback} routed straight to Ken-Burns after a second "
         "consecutive identity failure."

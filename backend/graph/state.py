@@ -4,7 +4,31 @@ Extend additively only: add new keys, never rename/remove an existing one
 without a sync between KR and RR and a version bump in this docstring.
 Spec of record: docs/TECHNICAL_DOCUMENTATION.md section 6.
 
-version: 12
+version: 13
+  - v13: Product Web Research (feature/product-web-research). Adds a new
+        LangGraph node (agents/product_research_node.py) that runs between
+        product_truth_extractor and concept_agent and, ONLY for tech/software-
+        like ("spec_driven") products, autonomously web-searches (Tavily) for
+        public specs/features and distills up to 10 checkable ResearchFact
+        objects. Three additive shapes, no removals:
+          (a) ResearchFact TypedDict — a single web-sourced, checkable claim
+              (fact_id "r1"/"r2"/..., deliberately disjoint from ProductTruth's
+              "t*" ids), with category/source_url/confidence.
+          (b) ProductResearch TypedDict + product_research: NotRequired[...] on
+              ProductCutState — the node's whole output (performed flag,
+              spec_driven/appearance_driven/skipped classification, facts, and
+              the queries actually run).
+          (c) ScriptVariant.grounding_research_ids: NotRequired[list[str]] — the
+              "r*" ids a variant's copy/VO actually used, cited by the concept
+              agent exactly like grounding_truth_ids cites "t*" ids.
+        CRITICAL CONTRACT: ResearchFacts are NOT ProductTruths and never merge
+        into product_truths. Truths are photo-grounded VISUAL anchors that feed
+        the video/i2v prompt pipeline (Treatment/Shot-List/Video-Gen); a research
+        fact ("battery lasts 2.2h") is copy/VO material only, is NOT visible in
+        the photos, and MUST NEVER drive a visual prompt (doing so would let an
+        unseeable spec hallucinate into the generated image). They therefore live
+        in a separate state key with their own "r*" id namespace so the two can
+        never be confused by any downstream consumer.
   - v2: added CompletionDetail + two CriticScore keys (completion, completion_detail)
         and six NotRequired Critic-Chain scratch keys (hook/pacing/body/cta/tone_scores,
         meta_critic_result) to plumb the 5 parallel checkers into the Meta-Critic join.
@@ -156,6 +180,31 @@ class ProductTruth(TypedDict):
     source: str
 
 
+class ResearchFact(TypedDict):
+    # v13: a single web-sourced, checkable product claim (copy/VO material only,
+    # NOT a ProductTruth -- see the v13 changelog note above). The "r*" id
+    # namespace is deliberately disjoint from ProductTruth's "t*" ids so the two
+    # can never be confused by a downstream consumer.
+    fact_id: str                 # "r1", "r2", ... — disjoint from truth "t*" ids
+    claim: str                   # ≤25 words, checkable
+    category: Literal["spec", "feature", "differentiator",
+                      "compatibility", "use_case", "visual_moment"]
+    source_url: str
+    confidence: Literal["high", "medium"]
+
+
+class ProductResearch(TypedDict):
+    # v13: the whole output of product_research_node. `performed` is False
+    # whenever the node skipped or degraded (no TAVILY_API_KEY, not spec_driven,
+    # all searches failed, or any exception) -- the concept agent then behaves
+    # byte-identically to before this feature existed.
+    performed: bool
+    classification: Literal["research_needed", "skipped"]
+    product_name: NotRequired[str]
+    facts: list[ResearchFact]
+    queries_used: NotRequired[list[str]]
+
+
 class ScriptBeat(TypedDict):
     t_start: float
     t_end: float
@@ -169,6 +218,11 @@ class ScriptVariant(TypedDict):
     hook_type: str
     emotional_trigger: str
     grounding_truth_ids: list[str]
+    # v13: the "r*" ResearchFact ids this variant's copy/VO actually used, cited
+    # exactly like grounding_truth_ids cites "t*" ProductTruth ids. NotRequired:
+    # absent/empty when no web research was performed (regression-safe -- a
+    # variant with no research facts is shaped identically to pre-v13).
+    grounding_research_ids: NotRequired[list[str]]
     beats: list[ScriptBeat]
     target_length_sec: int
 
@@ -373,6 +427,11 @@ class ProductCutState(TypedDict, total=False):
 
     # populated by Phase 1 (Product Truth Extractor, Concept Agent, Critic Chain)
     product_truths: list[ProductTruth]
+    # v13: web-sourced product facts, written by product_research_node (runs
+    # between product_truth_extractor and concept_agent) ONLY for spec_driven
+    # products. Copy/VO material only -- see the v13 changelog note for why these
+    # are kept strictly separate from product_truths.
+    product_research: NotRequired[ProductResearch]
     script_variants: list[ScriptVariant]
     hook_scores: NotRequired[dict[str, dict]]     # raw Hook-Checker output, consumed by meta_critic_node
     pacing_scores: NotRequired[dict[str, dict]]   # raw Pacing-Checker output

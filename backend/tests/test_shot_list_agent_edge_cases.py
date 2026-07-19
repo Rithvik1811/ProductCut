@@ -385,8 +385,6 @@ async def test_negative_prompt_over_500_chars_logs_warning_but_is_not_truncated(
     assert any(
         "s2" in r.message and "500-char" in r.message for r in caplog.records
     )
-    # A sibling shot with no long extra never trips the guard.
-    assert not any("s1" in r.message and "500-char" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio

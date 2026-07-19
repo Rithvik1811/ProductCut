@@ -215,3 +215,23 @@ def patch_assembly_boundaries(monkeypatch) -> None:
         )
 
     monkeypatch.setattr("agents.assembly_agent._assemble_master_cut_impl", _fake_assemble_impl)
+
+
+def patch_format_export_boundaries(monkeypatch) -> None:
+    """Fake the Format Export node's ffmpeg/OSS/download boundary so full-graph
+    tests don't make real network calls or shell out to ffmpeg.
+
+    The fake returns three synthetic signed URLs (9x16, 1x1, 16x9) keyed by
+    aspect-ratio name, which is the exact shape format_export_node expects
+    from generate_format_exports.
+    """
+
+    async def _fake_generate_format_exports(master_cut_uri: str, job_id: str, **kwargs):  # noqa: ARG001
+        base = f"http://oss.example.com/jobs/{job_id}"
+        return {
+            "aspect_9x16": f"{base}/export_9x16.mp4",
+            "aspect_1x1": f"{base}/export_1x1.mp4",
+            "aspect_16x9": f"{base}/export_16x9.mp4",
+        }
+
+    monkeypatch.setattr("agents.format_export_node.generate_format_exports", _fake_generate_format_exports)

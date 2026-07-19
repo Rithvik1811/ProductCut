@@ -489,10 +489,10 @@ def _four_branded_variants() -> list[dict]:
             "grounding_truth_ids": ["t0", "t1", "t2"],
             "beats": [
                 {"t_start": 0,  "t_end": 3,  "line": hook},
-                {"t_start": 3,  "t_end": 6,  "line": "Cold stays cold for 24 hours."},
-                {"t_start": 6,  "t_end": 10, "line": "Matte blue looks the same a year later."},
-                {"t_start": 10, "t_end": 14, "line": "Double-wall keeps every degree inside."},
-                {"t_start": 14, "t_end": 18, "line": cta},
+                {"t_start": 3,  "t_end": 9,  "line": "Cold stays cold for 24 hours."},
+                {"t_start": 9,  "t_end": 16, "line": "Matte blue looks the same a year later."},
+                {"t_start": 16, "t_end": 23, "line": "Double-wall keeps every degree inside."},
+                {"t_start": 23, "t_end": 30, "line": cta},
             ],
             "target_length_sec": DEFAULT_TARGET_LENGTH_SEC,
         }

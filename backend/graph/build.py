@@ -114,6 +114,7 @@ from agents.ken_burns_fallback_node import ken_burns_fallback_node
 from agents.merge_validator import merge_validator_node, route_after_merge_validation
 from agents.meta_critic import meta_critic_node
 from agents.pacing_checker import pacing_checker_node
+from agents.product_research_node import product_research_node
 from agents.product_truth_extractor import product_truth_extractor_node
 from agents.shot_list_agent import shot_list_agent_node
 from agents.treatment_agent import treatment_agent_node
@@ -133,6 +134,7 @@ def _build_uncompiled() -> StateGraph:
     builder = StateGraph(ProductCutState)
     builder.add_node("brand_research_node", brand_research_node)
     builder.add_node("product_truth_extractor", product_truth_extractor_node)
+    builder.add_node("product_research_node", product_research_node)
     builder.add_node("concept_agent", concept_agent_node)
     builder.add_node("hook_checker", hook_checker_node)
     builder.add_node("pacing_checker", pacing_checker_node)
@@ -143,7 +145,12 @@ def _build_uncompiled() -> StateGraph:
 
     builder.add_edge(START, "brand_research_node")
     builder.add_edge("brand_research_node", "product_truth_extractor")
-    builder.add_edge("product_truth_extractor", "concept_agent")
+    # product_research_node (feature/product-web-research) runs between the truth
+    # extractor and the concept agent: it web-researches spec_driven products so
+    # the concept agent can cite real, verified specs/features in copy/VO. It is
+    # a graceful no-op for appearance-driven products and on any failure.
+    builder.add_edge("product_truth_extractor", "product_research_node")
+    builder.add_edge("product_research_node", "concept_agent")
 
     # Fan-out: concept_agent's 4 script variants get scored by 5 parallel specialists.
     builder.add_edge("concept_agent", "hook_checker")
@@ -282,19 +289,49 @@ async def build_graph(exit_stack: Optional[AsyncExitStack] = None):
     if database_url:
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            from psycopg.rows import dict_row
+            from psycopg_pool import AsyncConnectionPool
 
             stack = exit_stack if exit_stack is not None else AsyncExitStack()
-            checkpointer = await stack.enter_async_context(
-                AsyncPostgresSaver.from_conn_string(database_url)
+
+            # Bug 7 fix: a single AsyncPostgresSaver.from_conn_string connection
+            # is a single point of failure -- a network blip or ApsaraDB idle
+            # timeout kills it, and every subsequent aget_state/checkpoint write
+            # then fails. Back the checkpointer with an AsyncConnectionPool
+            # instead: it transparently reconnects dropped/idle connections and
+            # hands out a live one per checkpoint operation, so an idle timeout
+            # no longer poisons in-flight jobs.
+            connection_kwargs = {
+                "autocommit": True,
+                "prepare_threshold": 0,
+                "row_factory": dict_row,
+            }
+            pool = AsyncConnectionPool(
+                conninfo=database_url,
+                min_size=1,
+                max_size=10,
+                max_idle=300.0,
+                open=False,
+                kwargs=connection_kwargs,
             )
+            await stack.enter_async_context(pool)
+            checkpointer = AsyncPostgresSaver(pool)
             await checkpointer.setup()
-            logger.info("Checkpointer: AsyncPostgresSaver (DATABASE_URL detected)")
+            logger.info(
+                "Checkpointer: AsyncPostgresSaver over AsyncConnectionPool "
+                "(DATABASE_URL detected)"
+            )
             return builder.compile(checkpointer=checkpointer)
         except Exception as exc:  # noqa: BLE001 - scaffold must not hard-fail
-            logger.warning(
+            # Bug 7 fix: log at ERROR (not WARNING) -- silently degrading a
+            # DATABASE_URL run to a non-durable MemorySaver is a data-loss event
+            # (all resume/checkpoint durability is lost), not a benign fallback.
+            logger.error(
                 "DATABASE_URL set but AsyncPostgresSaver init failed (%s); "
-                "falling back to MemorySaver",
+                "falling back to MemorySaver -- checkpoints will NOT be durable "
+                "and interrupted jobs cannot resume.",
                 exc,
+                exc_info=True,
             )
 
     logger.info("Checkpointer: MemorySaver (no DATABASE_URL — standalone mode)")

@@ -27,13 +27,14 @@ assertions crisp.
 from __future__ import annotations
 
 import pytest
-from langgraph.types import Command
 
 from agents.continuity_agent import DRIFT_THRESHOLD
+from agents.continuity_gate import CONTINUITY_APPROVED_KEY, MAX_AUTO_RETRIES
 from graph.build import build_graph
 from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
 from tests._phase3_graph import (
     patch_assembly_boundaries,
+    patch_format_export_boundaries,
     patch_phase3_boundaries,
     patch_visual_direction_boundaries,
     patch_voiceover_boundaries,
@@ -138,6 +139,7 @@ async def test_drifted_shot_auto_retried_once_then_passes(monkeypatch):
     patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
     patch_voiceover_boundaries(monkeypatch)  # Phase 5: parallel branch off merge_validator
     patch_assembly_boundaries(monkeypatch)  # Phase 5: fan-in join off voiceover + continuity_gate
+    patch_format_export_boundaries(monkeypatch)  # Phase 6: format exports without real ffmpeg/OSS
     wan_counts = _patch_counting_wan(monkeypatch)
     _patch_continuity_scoring(monkeypatch, always_drift=False)
 
@@ -194,6 +196,7 @@ async def test_assembly_agent_runs_exactly_once_after_continuity_loop_resolves(m
     _patch_upstream(monkeypatch)
     patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
     patch_voiceover_boundaries(monkeypatch)  # finishes trivially fast (one early superstep)
+    patch_format_export_boundaries(monkeypatch)  # Phase 6: format exports without real ffmpeg/OSS
     wan_counts = _patch_counting_wan(monkeypatch)
     _patch_continuity_scoring(monkeypatch, always_drift=False)  # 2-pass loop: drift, then resolve
 
@@ -262,52 +265,48 @@ async def test_assembly_agent_runs_exactly_once_after_continuity_loop_resolves(m
 
 
 # ---------------------------------------------------------------------------
-# Scenario B: retries exhausted -> real interrupt -> accept_fallback -> Ken-Burns.
+# Scenario B: retries exhausted -> auto-accept (fully autonomous pipeline).
+# The continuity gate no longer calls interrupt(); it stamps the best-available
+# clip with CONTINUITY_APPROVED_KEY and keeps status="passed" so it flows
+# straight to Assembly. Ken-Burns is reserved for hard infra failures, not
+# quality drift.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_exhausted_retries_interrupt_then_accept_fallback_routes_to_ken_burns(monkeypatch):
+async def test_exhausted_retries_auto_accepts_and_routes_to_assembly(monkeypatch):
     _patch_upstream(monkeypatch)
     patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
     patch_voiceover_boundaries(monkeypatch)  # Phase 5: parallel branch off merge_validator
     patch_assembly_boundaries(monkeypatch)  # Phase 5: fan-in join off voiceover + continuity_gate
+    patch_format_export_boundaries(monkeypatch)  # Phase 6: format exports without real ffmpeg/OSS
     _patch_counting_wan(monkeypatch)
     _patch_continuity_scoring(monkeypatch, always_drift=True)
 
     graph = await build_graph()
-    cfg = {"configurable": {"thread_id": "loop-exhaust"}}
+    # Default recursion_limit=25 is too low: product_research_node adds 1 extra
+    # superstep (~15 initial) and MAX_AUTO_RETRIES=3 needs 4 loop passes × 4
+    # supersteps = 16 more. Raise to 50 for headroom.
+    cfg = {"configurable": {"thread_id": "loop-exhaust"}, "recursion_limit": 50}
 
-    # Drive until the graph pauses at the real interrupt for the drifty shot.
+    # Drive to completion -- no interrupt should fire; the gate auto-accepts
+    # after MAX_AUTO_RETRIES retries instead of pausing for human review.
     async for _ in graph.astream_events(_initial_state("loop-exhaust"), config=cfg, version="v2"):
         pass
 
-    st = await graph.aget_state(cfg)
-    assert len(st.interrupts) == 1
-    surfaced = st.interrupts[0].value
-    assert surfaced["shot_id"] == _DRIFTY_SHOT
-    assert surfaced["drift_score"] > DRIFT_THRESHOLD
-
-    # The drifty shot exhausted its automatic retries before the interrupt.
-    paused_by_id = {s["shot_id"]: s for s in st.values["shot_list"]}
-    assert paused_by_id[_DRIFTY_SHOT]["retry_count"] == 2
-
-    # Resume with accept_fallback -> routes back through Ken-Burns to "fallback".
-    async for _ in graph.astream_events(
-        Command(resume={"resolution": "accept_fallback"}), config=cfg, version="v2"
-    ):
-        pass
-
     final = await graph.aget_state(cfg)
-    assert not final.interrupts  # fully resolved
-    assert final.next == ()
+    assert not final.interrupts  # autonomous pipeline: no human-review interrupt
+    assert final.next == ()       # graph fully terminated
+
     by_id = {s["shot_id"]: s for s in final.values["shot_list"]}
-    # The drifty shot got a REAL Ken-Burns fallback clip and terminal status.
-    assert by_id[_DRIFTY_SHOT]["status"] == "fallback"
     generated = final.values["generated_shots"]
-    assert _DRIFTY_SHOT in generated
-    assert generated[_DRIFTY_SHOT]["video_uri"].startswith("http://oss.example.com/jobs/loop-exhaust/shots/s2/")
-    # The review entry was recorded in the queue.
-    queue = final.values["human_review_queue"]
-    assert any(e["shot_id"] == _DRIFTY_SHOT for e in queue)
+
+    # The drifty shot exhausted its retries and was auto-accepted as "passed".
+    assert by_id[_DRIFTY_SHOT]["status"] == "passed"
+    assert by_id[_DRIFTY_SHOT]["retry_count"] == MAX_AUTO_RETRIES
+    # The CONTINUITY_APPROVED_KEY stamp prevents re-evaluation on later loop passes.
+    assert generated[_DRIFTY_SHOT].get(CONTINUITY_APPROVED_KEY) is True
+    # No human review entry was written (fully autonomous path).
+    assert final.values.get("human_review_queue", []) == []
+
     # Siblings are untouched, still real passes.
     for sid, shot in by_id.items():
         if sid != _DRIFTY_SHOT:
@@ -353,11 +352,13 @@ async def test_reproducible_identity_failure_retries_once_then_real_ken_burns_fa
     patch_phase3_boundaries(monkeypatch, fail_shot_s2=False)
     patch_voiceover_boundaries(monkeypatch)  # Phase 5: parallel branch off merge_validator
     patch_assembly_boundaries(monkeypatch)  # Phase 5: fan-in join off voiceover + continuity_gate
+    patch_format_export_boundaries(monkeypatch)  # Phase 6: format exports without real ffmpeg/OSS
     wan_counts = _patch_counting_wan(monkeypatch)
     _patch_identity_only_failure(monkeypatch, always_fail_identity=True)
 
     graph = await build_graph()
-    cfg = {"configurable": {"thread_id": "loop-identity-fallback"}}
+    # Raise recursion_limit: 15 initial supersteps + 3 loop passes × 4 = 27 > default 25.
+    cfg = {"configurable": {"thread_id": "loop-identity-fallback"}, "recursion_limit": 50}
 
     async for _ in graph.astream_events(_initial_state("loop-identity-fallback"), config=cfg, version="v2"):
         pass
