@@ -6,7 +6,6 @@ interface SummaryStepProps {
   photos: Photo[];
   brief: string;
   moodWords: string[];
-  refLink: string;
   neverList: string[];
   notes: string;
   onEditPhotos: () => void;
@@ -18,7 +17,6 @@ export default function SummaryStep({
   photos,
   brief,
   moodWords,
-  refLink,
   neverList,
   notes,
   onEditPhotos,
@@ -27,10 +25,9 @@ export default function SummaryStep({
 }: SummaryStepProps) {
   const photoCountLabel = photos.length ? `${photos.length} / 3 added` : "up to 3";
   const hasMood = moodWords.length > 0;
-  const hasRef = !!refLink.trim();
   const hasNever = neverList.length > 0;
   const hasNotes = !!notes.trim();
-  const hasDirection = hasMood || hasRef || hasNever || hasNotes;
+  const hasDirection = hasMood || hasNever || hasNotes;
 
   const sectionHeadStyle = { display: "flex", alignItems: "center", justifyContent: "space-between" };
   const labelStyle = {
@@ -108,12 +105,6 @@ export default function SummaryStep({
                       </span>
                     ))}
                   </span>
-                </div>
-              )}
-              {hasRef && (
-                <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-                  <span style={rowLabelStyle}>Reference</span>
-                  <span style={{ fontSize: "13.5px", color: "var(--ink)", wordBreak: "break-all" }}>{refLink}</span>
                 </div>
               )}
               {hasNever && (

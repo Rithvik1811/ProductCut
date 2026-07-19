@@ -35,8 +35,6 @@ export interface WizardProps {
   onMoodInput: (value: string) => void;
   onMoodKey: (e: KeyboardEvent<HTMLInputElement>) => void;
   onRemoveMood: (i: number) => void;
-  refLink: string;
-  onRefInput: (e: ChangeEvent<HTMLInputElement>) => void;
   neverList: string[];
   neverInput: string;
   onNeverInput: (value: string) => void;
@@ -166,8 +164,6 @@ export default function Wizard(props: WizardProps) {
               onMoodInput={props.onMoodInput}
               onMoodKey={props.onMoodKey}
               onRemoveMood={props.onRemoveMood}
-              refLink={props.refLink}
-              onRefInput={props.onRefInput}
               neverList={props.neverList}
               neverInput={props.neverInput}
               onNeverInput={props.onNeverInput}
@@ -182,7 +178,6 @@ export default function Wizard(props: WizardProps) {
               photos={photos}
               brief={brief}
               moodWords={props.moodWords}
-              refLink={props.refLink}
               neverList={props.neverList}
               notes={props.notes}
               onEditPhotos={() => goStep(1)}

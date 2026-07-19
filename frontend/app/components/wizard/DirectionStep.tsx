@@ -9,8 +9,6 @@ interface DirectionStepProps {
   onMoodInput: (value: string) => void;
   onMoodKey: (e: KeyboardEvent<HTMLInputElement>) => void;
   onRemoveMood: (i: number) => void;
-  refLink: string;
-  onRefInput: (e: ChangeEvent<HTMLInputElement>) => void;
   neverList: string[];
   neverInput: string;
   onNeverInput: (value: string) => void;
@@ -26,8 +24,6 @@ export default function DirectionStep({
   onMoodInput,
   onMoodKey,
   onRemoveMood,
-  refLink,
-  onRefInput,
   neverList,
   neverInput,
   onNeverInput,
@@ -69,26 +65,6 @@ export default function DirectionStep({
             onInputChange={onMoodInput}
             onKeyDown={onMoodKey}
             onRemove={onRemoveMood}
-          />
-        </div>
-        <div>
-          <label style={labelStyle}>Reference ad</label>
-          <input
-            type="url"
-            value={refLink}
-            onChange={onRefInput}
-            placeholder="https://…"
-            className="pcs-underline-input"
-            style={{
-              width: "100%",
-              padding: "0 0 10px",
-              fontFamily: "var(--font-sans)",
-              fontSize: 15,
-              color: "var(--ink)",
-              background: "transparent",
-              border: "none",
-              borderBottom: "1px solid var(--hair-strong)",
-            }}
           />
         </div>
         <div>

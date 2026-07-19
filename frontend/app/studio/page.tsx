@@ -73,7 +73,6 @@ interface State {
   brief: string;
   moodWords: string[];
   moodInput: string;
-  refLink: string;
   neverList: string[];
   neverInput: string;
   notes: string;
@@ -120,7 +119,6 @@ function initialState(): State {
     brief: "",
     moodWords: [],
     moodInput: "",
-    refLink: "",
     neverList: [],
     neverInput: "",
     notes: "",
@@ -306,7 +304,6 @@ export default function StudioPage() {
     },
     [state.brief, goStep],
   );
-  const onRefInput = useCallback((e: ChangeEvent<HTMLInputElement>) => setState({ refLink: e.target.value }), [setState]);
   const onNotesInput = useCallback(
     (e: ChangeEvent<HTMLTextAreaElement>) => setState({ notes: e.target.value }),
     [setState],
@@ -641,7 +638,6 @@ export default function StudioPage() {
     const formData = new FormData();
     formData.append("brief", state.brief);
     if (state.moodWords.length) formData.append("mood_words", JSON.stringify(state.moodWords));
-    if (state.refLink) formData.append("reference_ad", state.refLink);
     if (state.neverList.length) formData.append("never_do", state.neverList.join(", "));
     if (state.notes) formData.append("notes", state.notes);
     state.photos.forEach((photo) => {
@@ -778,8 +774,6 @@ export default function StudioPage() {
           onMoodInput={onMoodInput}
           onMoodKey={onMoodKey}
           onRemoveMood={(i) => removeTag("moodWords", i)}
-          refLink={state.refLink}
-          onRefInput={onRefInput}
           neverList={state.neverList}
           neverInput={state.neverInput}
           onNeverInput={onNeverInput}
