@@ -300,6 +300,20 @@ RIGHT (lands on that same moment): "Miles from the trailhead. Still ice-cold."
 Write VO that makes the VIEWER picture themselves using it — second-person address or imperative is the
 correct lever. The viewer is the protagonist; the product is what makes the scene possible.
 """
+    # Bug (confirmed on a real charcoal-briquettes run): the prose above already
+    # tells the model to cite research facts in "grounding_research_ids"
+    # (_research_facts_block's "Cite every fact you use in grounding_research_ids"),
+    # but the JSON schema example below never showed that field -- only
+    # "grounding_truth_ids". Without a concrete example, the model has no output
+    # slot demonstrated for research citations and, at least some of the time,
+    # crams research fact ids (r1, r2, ...) into grounding_truth_ids instead,
+    # which then fails validation as an "unknown truth_id" (grounding_truth_ids
+    # is checked against the photo-truth id namespace only). Always showing the
+    # field (empty-array shape when there's no research to cite) keeps one
+    # stable schema regardless of whether research ran.
+    research_schema_line = (
+        '\n      "grounding_research_ids": ["r1"],' if research_facts else ""
+    )
     return f"""You are a creative director writing short-form ad video scripts ({target_length_sec}
 seconds) for e-commerce product ads.
 
@@ -672,7 +686,7 @@ any variant. If mood words are present, let them bias framework/tone choice.
       "framework": "one of: {' | '.join(FRAMEWORKS)}",
       "hook_type": "the hook angle",
       "emotional_trigger": "the primary emotional trigger",
-      "grounding_truth_ids": ["t1", "t3"],
+      "grounding_truth_ids": ["t1", "t3"],{research_schema_line}
       "beats": [
         {{"t_start": 0, "t_end": 3, "line": "the hook line"}},
         {{"t_start": 3, "t_end": 6, "line": "next beat's line"}}

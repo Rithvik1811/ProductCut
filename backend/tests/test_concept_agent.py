@@ -383,6 +383,43 @@ def test_feature_spread_block_present_in_system_prompt():
     assert "sell the WHOLE product" in prompt
 
 
+def test_json_schema_omits_grounding_research_ids_when_no_research_facts():
+    """Real bug, confirmed on a live charcoal-briquettes run: the JSON schema
+    example previously showed only "grounding_truth_ids", even though the
+    prose (_research_facts_block) separately instructs the model to cite
+    research facts in "grounding_research_ids" -- with no schema slot ever
+    demonstrated for it, the model sometimes crammed research fact ids into
+    grounding_truth_ids instead, which then failed validation as an "unknown
+    truth_id" (grounding_truth_ids is checked against the photo-truth id
+    namespace only). No research facts means nothing to cite, so the field is
+    correctly omitted from the example in that case.
+    """
+    prompt = _build_system_prompt(15, research_facts=None)
+    schema = prompt.split("Return ONLY valid JSON")[1]
+    assert '"grounding_truth_ids"' in schema
+    assert '"grounding_research_ids"' not in schema
+
+
+def test_json_schema_includes_grounding_research_ids_when_research_facts_present():
+    prompt = _build_system_prompt(
+        15,
+        research_facts=[
+            {"fact_id": "r1", "claim": "x", "category": "spec", "source_url": "", "confidence": "medium"},
+        ],
+    )
+    schema = prompt.split("Return ONLY valid JSON")[1]
+    assert '"grounding_truth_ids": ["t1", "t3"]' in schema
+    # The example must show an r-prefixed id (not a t-prefixed one) so the
+    # model has a concrete, correctly-namespaced example to follow.
+    assert '"grounding_research_ids": ["r1"]' in schema
+    # grounding_research_ids must appear on the same object as
+    # grounding_truth_ids, not floating elsewhere in the prompt.
+    truth_idx = schema.index('"grounding_truth_ids"')
+    research_idx = schema.index('"grounding_research_ids"')
+    beats_idx = schema.index('"beats"')
+    assert truth_idx < research_idx < beats_idx
+
+
 # ---------------------------------------------------------------------------
 # PRONOUN THREAD backstop (_reintroduction_problems, wired into _validate_variant).
 # ---------------------------------------------------------------------------
