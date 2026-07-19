@@ -583,6 +583,23 @@ export default function StudioPage() {
           break;
         }
 
+        case "job_failed": {
+          // C2: {reason, stage} — the pipeline's terminal-failure counterpart
+          // to job_complete (e.g. merge_validator_node: every script variant
+          // was rejected by the critic chain, so there was nothing to merge).
+          // Reuses the same error-banner + stop-reconnecting path "Bug 5"
+          // already built for the raw run.error transport event, since this
+          // is the same "show the user why it stopped" need, just for a
+          // failure the backend now catches and reports instead of crashing.
+          if (elapsedIntervalRef.current) {
+            clearInterval(elapsedIntervalRef.current);
+            elapsedIntervalRef.current = null;
+          }
+          noReconnectRef.current = true;
+          setState({ error: payload.reason, jobDone: true });
+          break;
+        }
+
         // Informational / future panels — no state update needed yet
         case "vo_ready":
         case "master_cut_ready":

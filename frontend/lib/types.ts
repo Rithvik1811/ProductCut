@@ -277,6 +277,10 @@ export type JobEvent =
   | {
       type: "master_cut_ready";
       payload: { uri: string; shot_count: number; total_duration_sec: number };
+    }
+  | {
+      type: "job_failed";
+      payload: { reason: string; stage: string };
     };
 
 // ---------------------------------------------------------------------------
