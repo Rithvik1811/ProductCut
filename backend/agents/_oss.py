@@ -275,10 +275,28 @@ def upload_export_to_oss(
     return _put_and_sign(key, local_path, "video/mp4", bucket=bucket)
 
 
+def sign_existing_key(
+    key: str,
+    *,
+    bucket: Optional[object] = None,
+    params: Optional[dict] = None,
+) -> str:
+    """Return a fresh signed GET URL for an already-uploaded OSS object.
+
+    Does not upload anything — only calls `sign_url`. Useful for refreshing
+    URLs that have exceeded `SIGNED_URL_TTL_SEC` without re-uploading the file.
+    Pass `params` to bake extra OSS response-override query params into the
+    signature (e.g. ``{"response-content-disposition": "attachment;filename=\\"x.mp4\\""}``).
+    """
+    b = bucket if bucket is not None else _build_bucket()
+    return b.sign_url("GET", key, SIGNED_URL_TTL_SEC, slash_safe=True, params=params or {})
+
+
 __all__ = [
     "SIGNED_URL_TTL_SEC",
     "oss_object_key",
     "oss_job_asset_key",
+    "sign_existing_key",
     "upload_video_to_oss",
     "upload_audio_to_oss",
     "upload_master_cut_to_oss",

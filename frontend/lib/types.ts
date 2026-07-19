@@ -288,4 +288,5 @@ export interface HistoryEntry {
   date: number;
   truths: Truth[];
   final: Final | null;
+  jobId?: string;
 }

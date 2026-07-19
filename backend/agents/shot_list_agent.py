@@ -755,6 +755,7 @@ def _build_call_b_system_prompt(
     hero_max_duration_sec: float = HERO_SHOT_MAX_DURATION_SEC,
     hook_implies_person: bool = False,
     has_visual_direction: bool = False,
+    human_affordance: bool = False,
 ) -> str:
     hook_structure_note = (
         """This script's hook beat establishes a person in a specific moment (the
@@ -788,6 +789,32 @@ real space rather than floating against white.
 
 """
         if has_visual_direction else ""
+    )
+    human_shot_guidance = (
+        """
+HUMAN-FIRST NARRATIVE (this product is worn/held/operated by a person -- its value
+is experienced, not admired from a distance). The majority of your demo/proof shots
+MUST be human-interaction type (product_in_hand or worn_in_use), each demonstrating
+ONE SPECIFIC FEATURE through the person's action and reaction:
+- At least 3 of the non-bookend shots (not the opening hook, not the CTA close)
+  should be human-demonstration shots.
+- Every human shot demonstrates a DIFFERENT specific feature. For example, for
+  headphones: one shot shows the person activating noise-cancellation and visibly
+  relaxing; another shows fingertip swiping the touch-control surface on the earcup;
+  another shows adjusting the headband for fit. NOT just "person wearing it."
+  Each shot proves ONE specific claim from the script through visible action and
+  visible reaction/result.
+- Product-alone shots are supporting material, not the main story. Use them only
+  for the opening hook (if the hook beat is claim-led, not person-led) and
+  optionally one close-up detail shot mid-ad where the product's physical form
+  must be shown without occlusion.
+- Each human shot MUST cite a DIFFERENT human-contact fact -- never repeat the
+  same contact point across two shots."""
+        if human_affordance else
+        """
+Concentrate any human-interaction shots in the demo/proof beats. Cap
+human-interaction shots at 1-3 per ad -- never zero when the human-contact
+affordance rubric below supports one, never every shot."""
     )
     return f"""{vda_note}You are a cinematographer turning already-justified shots into concrete
 video-generation briefs. Each shot's grounding (its exact script quote + the real
@@ -826,6 +853,14 @@ For every shot produce these fields:
   deliberately slow, tender moment (rare); a hedged verb compounds i2v models'
   documented bias toward under-motion early in a clip into a shot that barely
   reads as moving at all.
+  ANTI-ZOOM RULE: never write a description whose only motion is "the camera
+  zooms in" or "the product is revealed by a slow zoom." That is the i2v
+  model's default behavior with no instruction -- describing it wastes your
+  word budget and produces the same lazy zoom you would get with a blank
+  description. Instead, describe WHAT CHANGES in the scene: the product
+  rotates to reveal a new face, the texture catches the light differently as
+  the angle shifts, a previously-hidden detail comes into frame. Motion in the
+  SCENE beats motion of the CAMERA every time.
 - negative_prompt_extra: OPTIONAL short extra risk terms for THIS shot only (a
   shared identity-first negative prompt is already applied; only add per-shot
   risk). Leave "" if none.
@@ -836,12 +871,10 @@ Always close (cta beat_role) on the product ALONE -- never a human-interaction
 shot_type (product_in_hand / worn_in_use) for the CTA. This is also the
 technically safest choice for the close: an i2v clip's last frames stay
 closest to the reference photo, and a clean product-alone shot is the natural
-fallback anchor if a riskier human shot elsewhere fails. Concentrate any
-human-interaction shots in the demo/proof beats instead. Cap human-interaction
-shots at 1-3 per ad -- never zero when the human-contact affordance rubric
-below supports one, never every shot. Avoid `context_wide` framing more than
-once per ad on a worn_in_use shot -- wide framing makes the product smallest
-and hardest to identity-check.
+fallback anchor if a riskier human shot elsewhere fails. Avoid `context_wide`
+framing more than once per ad on a worn_in_use shot -- wide framing makes the
+product smallest and hardest to identity-check.
+{human_shot_guidance}
 
 ONE HERO SHOT, ALL OTHERS FACELESS (structural rule, video-gen-fidelity
 story-arc fix). Text-only i2v prompting cannot lock FACIAL identity across
@@ -1276,7 +1309,7 @@ async def _run_call_b(
     messages = [
         {
             "role": "system",
-            "content": _build_call_b_system_prompt(hero_max, hook_implies_person, has_visual_direction=visual_direction is not None),
+            "content": _build_call_b_system_prompt(hero_max, hook_implies_person, has_visual_direction=visual_direction is not None, human_affordance=human_affordance),
         },
         {"role": "user", "content": _build_call_b_user_content(justifications, truths_by_id, treatment, visual_direction)},
     ]
@@ -1335,13 +1368,15 @@ async def _run_call_b(
                     "role": "user",
                     "content": (
                         "Your shot list contains ZERO human-interaction shots, but this "
-                        "product's own truths name real human-contact parts -- per the "
-                        "human-contact affordance rubric, the shot list MUST include at "
-                        "least one. Change exactly one demo/proof shot's shot_type to "
-                        "product_in_hand or worn_in_use, grounding its contact point in "
-                        "the human-contact fact per the rubric (never the opening hook "
-                        "shot, never the CTA shot). Return the full corrected JSON in "
-                        "the same shape with all shots."
+                        "product is worn/held/operated by a person -- its features are "
+                        "demonstrated through use, not admired from a distance. "
+                        "Revise the shot list so that at least 3 of the non-bookend shots "
+                        "(not the opening hook, not the CTA close) are shot_type "
+                        "product_in_hand or worn_in_use. Each must demonstrate a DIFFERENT "
+                        "specific feature through the person's action and visible reaction -- "
+                        "not just 'person wearing it'. Ground each shot's contact point in a "
+                        "real human-contact fact from the product truths. Return the full "
+                        "corrected JSON in the same shape with all shots."
                     ),
                 })
                 continue

@@ -14,9 +14,21 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
+class _FakeSnapshot:
+    """Minimal state snapshot: non-empty values so the WS handler treats this
+    as a reconnect (skips the DB read path) and no pending work so it routes
+    to run.completed rather than run.interrupted."""
+    values = {"job_id": "testjob"}
+    next = ()
+    interrupts = ()
+
+
 class _FakeGraph:
     def __init__(self, events: list[dict]):
         self._events = events
+
+    async def aget_state(self, *_args, **_kwargs):
+        return _FakeSnapshot()
 
     async def astream_events(self, *_args, **_kwargs):
         for event in self._events:

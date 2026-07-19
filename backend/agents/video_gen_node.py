@@ -365,6 +365,56 @@ _FIXED_CAMERA_PHRASING = (
     "naturally and completes the described action fully within the clip."
 )
 
+# Rich motion descriptions for every named camera_move. Bare two-word names
+# ("push in", "orbit") give Wan almost no signal about magnitude or intent,
+# causing it to default to its safest training-data pattern: a barely-perceptible
+# zoom. Each description names: what moves, in which direction, by how much, and
+# that the motion must be visible and complete within the clip duration.
+_CAMERA_MOVE_DESCRIPTIONS: dict[str, str] = {
+    "push_in": (
+        "Push in: the camera advances steadily and noticeably toward the subject, "
+        "closing roughly a third of the original distance by the clip's end. "
+        "The motion is smooth and continuous — a real travel, not a subtle drift."
+    ),
+    "pull_back": (
+        "Pull back: the camera retreats steadily from a tight frame to a wider view, "
+        "visibly revealing more of the environment as it moves. "
+        "The subject shrinks in frame measurably from start to end."
+    ),
+    "orbit": (
+        "Orbital arc: the camera sweeps in a smooth lateral arc around the subject, "
+        "shifting the angle of view by 20–35 degrees. The subject stays centered "
+        "while the background perspective visibly rotates behind it."
+    ),
+    "pan": (
+        "Pan: the camera pivots horizontally in a steady sweep, traversing the subject "
+        "or environment from one side to the other. The frame moves decisively — "
+        "a half-second of movement, not a nearly-imperceptible drift."
+    ),
+    "tilt_up": (
+        "Tilt up: the camera rotates smoothly upward from base to apex, "
+        "revealing the subject's full vertical extent as it rises. "
+        "The motion begins at the bottom of the subject and completes at the top."
+    ),
+    "rack_focus": (
+        "Rack focus: the focal plane shifts mid-clip — one element blurs as another "
+        "sharpens. The transition is visible and deliberate: begin with foreground "
+        "in sharp focus, then smoothly rack to background (or reverse), with both "
+        "states held for at least one second each."
+    ),
+}
+
+# Appended to Action/Motion for every product-alone shot (non-human, non-static)
+# to counter Wan's documented bias toward under-motion (arXiv:2406.15735 —
+# the same static-start bias that drives _ACTION_URGENCY_CLAUSE on human shots).
+# Without an explicit urgency mandate, product shots tend to produce a barely-
+# perceptible zoom on the reference image rather than the specified camera move.
+_PRODUCT_MOTION_URGENCY_CLAUSE = (
+    " The camera movement is deliberate and clearly visible throughout — "
+    "not a subtle drift or barely-perceptible zoom. Motion begins within "
+    "the first second and continues noticeably to the clip's end."
+)
+
 # v8 fix: DashScope's `prompt_extend` silently defaults to `true` when omitted,
 # letting an internal, opaque LLM prompt-rewriter re-describe the reference
 # image in text before generation -- a plausible amplifier of the Meta Quest ->
@@ -558,16 +608,22 @@ def _build_prompt(shot: Shot, product_truths: list[ProductTruth], treatment: Opt
         # Counters both the i2v static-start bias and a clip that's still
         # mid-motion when it cuts off (see _ACTION_URGENCY_CLAUSE's own comment).
         _action_suffix += _ACTION_URGENCY_CLAUSE
+    elif shot["shot_type"] != "cta_endcard" and shot["camera_move"] != "static":
+        # Same static-start bias affects product-alone shots: Wan defaults to a
+        # barely-perceptible zoom when the camera move instruction is vague.
+        # Append the product urgency clause for every moving, non-human shot.
+        _action_suffix += _PRODUCT_MOTION_URGENCY_CLAUSE
     if shot["shot_type"] == "cta_endcard":
         # Opposite problem, same mechanism -- here the clip should visibly
         # SETTLE by the end rather than just stop (see _CTA_STILLNESS_CLAUSE).
         _action_suffix += _CTA_STILLNESS_CLAUSE
     action = description + _action_suffix
 
-    if shot["camera_move"] == "static":
+    move = shot["camera_move"]
+    if move == "static":
         camera = _FIXED_CAMERA_PHRASING
     else:
-        camera = shot["camera_move"].replace("_", " ")
+        camera = _CAMERA_MOVE_DESCRIPTIONS.get(move, move.replace("_", " "))
 
     lighting = shot["lighting"]
 

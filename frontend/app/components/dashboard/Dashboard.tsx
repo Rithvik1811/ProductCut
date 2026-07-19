@@ -61,6 +61,7 @@ export interface DashboardProps {
   onFallback: () => void;
 
   final: Final | null;
+  jobId?: string | null;
 }
 
 function formatElapsed(ms: number): string {
@@ -102,6 +103,7 @@ export default function Dashboard(props: DashboardProps) {
     onRetry,
     onFallback,
     final,
+    jobId,
   } = props;
 
   // -1 (nothing received yet) reads as "Ingest in progress", the real starting state.
@@ -254,7 +256,7 @@ export default function Dashboard(props: DashboardProps) {
         </section>
       )}
 
-      {final && <FinalPanel final={final} />}
+      {final && <FinalPanel final={final} jobId={jobId ?? undefined} />}
     </div>
   );
 }

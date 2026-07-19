@@ -22,10 +22,10 @@ import os
 import tempfile
 
 import pytest
-from langgraph.types import Command
 
 from agents.continuity_agent import DRIFT_THRESHOLD
 from agents.continuity_gate import (
+    CONTINUITY_APPROVED_KEY,
     MAX_AUTO_RETRIES,
     continuity_gate_node,
     route_after_continuity_gate,
@@ -36,6 +36,7 @@ from graph.build import build_graph
 from tests._fakes import FakeOpenAIClient
 from tests._phase3_graph import (
     patch_assembly_boundaries,
+    patch_format_export_boundaries,
     patch_phase3_boundaries,
     patch_voiceover_boundaries,
 )

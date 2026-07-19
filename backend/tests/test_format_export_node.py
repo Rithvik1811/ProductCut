@@ -128,7 +128,11 @@ async def test_format_export_node_writes_exports_key(monkeypatch):
     async def _fake_generate(master_cut_uri, job_id, **kw):
         return fake_exports
 
+    async def _noop_dispatch(event_name, payload):
+        pass
+
     monkeypatch.setattr("agents.format_export_node.generate_format_exports", _fake_generate)
+    monkeypatch.setattr("agents.format_export_node.adispatch_custom_event", _noop_dispatch)
 
     state = {"job_id": "j1", "master_cut_uri": "https://oss.example/jobs/j1/master_cut.mp4"}
     result = await format_export_node(state)
@@ -186,13 +190,14 @@ async def test_generate_format_exports_mocked_ffmpeg(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_format_export_node_exception_degrades_gracefully(monkeypatch):
+async def test_format_export_node_exception_propagates(monkeypatch):
+    """format_export_node re-raises exceptions so LangGraph emits run.error and
+    the checkpoint stays resumable. Swallowing would silently drop job_complete."""
     async def _failing(*a, **kw):
         raise RuntimeError("ffmpeg not found")
 
     monkeypatch.setattr("agents.format_export_node.generate_format_exports", _failing)
 
     state = {"job_id": "j1", "master_cut_uri": "https://oss.example/jobs/j1/master_cut.mp4"}
-    result = await format_export_node(state)
-
-    assert result == {}
+    with pytest.raises(RuntimeError, match="ffmpeg not found"):
+        await format_export_node(state)

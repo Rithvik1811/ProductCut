@@ -19,10 +19,10 @@ from typing import TypedDict
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command
 
 from agents.continuity_agent import DRIFT_THRESHOLD
 from agents.continuity_gate import (
+    CONTINUITY_APPROVED_KEY,
     IDENTITY_HARD_FAIL_STREAK_KEY,
     MAX_AUTO_RETRIES,
     continuity_gate_node,
@@ -151,150 +151,99 @@ async def test_retry_count_increment_is_the_only_mutation_here():
 
 
 # ---------------------------------------------------------------------------
-# Branch 3: retries exhausted -> real interrupt(), resume with each resolution.
+# Branch 3: retries exhausted -> auto-accept (fully autonomous pipeline, no interrupt).
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_exhausted_raises_real_interrupt_and_enqueues_review():
+async def test_exhausted_auto_accepts_without_interrupt():
+    """Retries exhausted -> auto-accept the best-available clip. No interrupt(),
+    no human review queue entry. Shot stays "passed" with CONTINUITY_APPROVED_KEY
+    stamped so a later loop pass doesn't re-evaluate it."""
     graph = _build_gate_graph()
     cfg = {"configurable": {"thread_id": "review"}}
     shot = _shot("s1", retry_count=MAX_AUTO_RETRIES)
-    await graph.ainvoke(_state([shot], {"s1": _gen(_OVER, "http://oss/s1.mp4")}), config=cfg)
+    result = await graph.ainvoke(_state([shot], {"s1": _gen(_OVER, "http://oss/s1.mp4")}), config=cfg)
 
     st = await graph.aget_state(cfg)
-    # The run genuinely paused at the interrupt.
-    assert st.next == ("continuity_gate",)
-    assert len(st.interrupts) == 1
-    surfaced = st.interrupts[0].value
-    assert surfaced["shot_id"] == "s1"
-    assert surfaced["drift_score"] == pytest.approx(_OVER)
-    assert surfaced["candidate_frame_uris"] == ["http://oss/s1.mp4"]
-
-
-@pytest.mark.asyncio
-async def test_interrupt_requested_event_fires_twice_across_pause_resume_known_limitation():
-    """KNOWN, DOCUMENTED LIMITATION (see continuity_gate.py's module docstring):
-    `adispatch_custom_event("interrupt_requested", ...)` sits BEFORE `interrupt()`,
-    and everything before `interrupt()` re-executes on resume -- so the event
-    fires once when the run pauses AND once again when it resumes, even though
-    COMMITTED STATE (human_review_queue) ends up correct either way. This test
-    locks in the CURRENT, understood, low-severity behavior (a live-stream-only
-    double-notification, not a state bug) so a future change is deliberate, not
-    accidental -- in particular, a "fix" that makes the event stop firing
-    entirely (zero live notifications) would be silently WORSE and this test
-    would catch that regression too (event_count would become 0, not 1)."""
-    graph = _build_gate_graph()
-    cfg = {"configurable": {"thread_id": "dup-event"}}
-    shot = _shot("s1", retry_count=MAX_AUTO_RETRIES)
-    state = _state([shot], {"s1": _gen(_OVER, "http://oss/s1.mp4")})
-
-    pause_events = [
-        e async for e in graph.astream_events(state, config=cfg, version="v2")
-        if e.get("event") == "on_custom_event" and e["name"] == "interrupt_requested"
-    ]
-    resume_events = [
-        e async for e in graph.astream_events(
-            Command(resume={"resolution": "approve"}), config=cfg, version="v2"
-        )
-        if e.get("event") == "on_custom_event" and e["name"] == "interrupt_requested"
-    ]
-
-    # The documented, verified double-fire: once per astream_events pass.
-    assert len(pause_events) == 1
-    assert len(resume_events) == 1
-    assert pause_events[0]["data"]["review"]["shot_id"] == "s1"
-    assert resume_events[0]["data"]["review"]["shot_id"] == "s1"
-
-    # Committed state is NOT doubled -- this is the part that actually matters.
-    final = await graph.aget_state(cfg)
-    assert len(final.values["human_review_queue"]) == 1
-    assert final.values["shot_list"][0]["status"] == "passed"  # applied "approve"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "resolution,expected_status,expected_retry",
-    [
-        ("approve", "passed", MAX_AUTO_RETRIES),
-        ("retry_with_edit", "pending", MAX_AUTO_RETRIES + 1),  # uncapped human retry
-        ("accept_fallback", "fallback_requested", MAX_AUTO_RETRIES),
-    ],
-)
-async def test_resume_applies_each_resolution(resolution, expected_status, expected_retry):
-    graph = _build_gate_graph()
-    cfg = {"configurable": {"thread_id": f"resume-{resolution}"}}
-    shot = _shot("s1", retry_count=MAX_AUTO_RETRIES)
-    await graph.ainvoke(_state([shot], {"s1": _gen(_OVER)}), config=cfg)
-
-    # Real resume through LangGraph's Command(resume=...) mechanism.
-    result = await graph.ainvoke(Command(resume={"resolution": resolution}), config=cfg)
-
-    st = await graph.aget_state(cfg)
-    assert st.next == ()  # resolved, ran to completion
+    assert st.next == ()  # ran to completion, never paused
+    assert not st.interrupts  # no human-review interrupt
     out = result["shot_list"][0]
-    assert out["status"] == expected_status
-    assert out["retry_count"] == expected_retry
-    # The review entry was enqueued.
-    assert len(result["human_review_queue"]) == 1
-    assert result["human_review_queue"][0]["shot_id"] == "s1"
-    # Only "approve" finishes; retry_with_edit ("pending") and accept_fallback
-    # ("fallback_requested") both loop back to Video-Gen -> Ken-Burns.
-    expected_route = "end" if resolution == "approve" else "video_gen"
-    assert route_after_continuity_gate(result) == expected_route
+    assert out["status"] == "passed"  # auto-accepted as-is
+    assert result["generated_shots"]["s1"].get(CONTINUITY_APPROVED_KEY)  # stamped
+    assert result["human_review_queue"] == []
 
 
 @pytest.mark.asyncio
-async def test_accept_fallback_resume_routes_back_for_ken_burns():
+async def test_exhausted_logs_warning_on_auto_accept(caplog):
+    """Retries exhausted -> the Gate logs a WARNING that it auto-accepted the
+    best-available clip (naming shot_id so it's visible in logs) rather than
+    interrupting for human review."""
     graph = _build_gate_graph()
-    cfg = {"configurable": {"thread_id": "af-route"}}
-    await graph.ainvoke(_state([_shot("s1", retry_count=MAX_AUTO_RETRIES)], {"s1": _gen(_OVER)}), config=cfg)
-    result = await graph.ainvoke(Command(resume={"resolution": "accept_fallback"}), config=cfg)
-    # fallback_requested must loop back so it reaches ken_burns_fallback (which is
-    # upstream of Continuity on the loop) -- routing to END would leave it clipless.
-    assert result["shot_list"][0]["status"] == "fallback_requested"
-    assert route_after_continuity_gate(result) == "video_gen"
+    cfg = {"configurable": {"thread_id": "warn-log"}}
+    shot = _shot("s1", retry_count=MAX_AUTO_RETRIES)
+    with caplog.at_level("WARNING"):
+        result = await graph.ainvoke(
+            _state([shot], {"s1": _gen(_OVER, "http://oss/s1.mp4")}), config=cfg
+        )
+    assert any(
+        "auto-accepting" in r.message and "s1" in r.message for r in caplog.records
+    )
+    assert result["shot_list"][0]["status"] == "passed"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_auto_accept_routes_to_end():
+    """Retries exhausted -> auto-accept sets status="passed", so the router
+    sends the graph to END (not back to video_gen for another round)."""
+    graph = _build_gate_graph()
+    cfg = {"configurable": {"thread_id": "auto-accept-route"}}
+    shot = _shot("s1", retry_count=MAX_AUTO_RETRIES)
+    result = await graph.ainvoke(_state([shot], {"s1": _gen(_OVER)}), config=cfg)
+    assert route_after_continuity_gate(result) == "end"
+
+
+@pytest.mark.asyncio
+async def test_continuity_approved_key_prevents_re_evaluation():
+    """A shot already auto-accepted (CONTINUITY_APPROVED_KEY stamped) is passed
+    through unchanged on subsequent loop passes -- not re-evaluated for drift."""
+    graph = _build_gate_graph()
+    cfg = {"configurable": {"thread_id": "approved-skip"}}
+    shot = _shot("s1", retry_count=MAX_AUTO_RETRIES)
+    generated = {"s1": {**_gen(_OVER), CONTINUITY_APPROVED_KEY: True}}
+    result = await graph.ainvoke(_state([shot], generated), config=cfg)
+
+    st = await graph.aget_state(cfg)
+    assert not st.interrupts
+    assert result["shot_list"][0]["status"] == "passed"
+    assert result["generated_shots"]["s1"].get(CONTINUITY_APPROVED_KEY)  # preserved
 
 
 # ---------------------------------------------------------------------------
-# Multi-shot review in ONE batch: two shots both exhausted -> two interrupts,
-# resumed in order, resolutions route to the correct shot.
+# Multi-shot: two shots both exhausted -> both auto-accepted in a single pass.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_two_shots_need_review_resume_in_order():
+async def test_two_shots_exhausted_both_auto_accepted():
+    """Both shots' retries exhausted -> both auto-accepted in ONE gate pass
+    with no interrupts, no resume required."""
     graph = _build_gate_graph()
-    cfg = {"configurable": {"thread_id": "multi"}}
+    cfg = {"configurable": {"thread_id": "multi-auto"}}
     shots = [
         _shot("s1", retry_count=MAX_AUTO_RETRIES),
         _shot("s2", retry_count=MAX_AUTO_RETRIES),
     ]
     generated = {"s1": _gen(_OVER, "http://oss/s1.mp4"), "s2": _gen(_OVER, "http://oss/s2.mp4")}
 
-    await graph.ainvoke(_state(shots, generated), config=cfg)
+    result = await graph.ainvoke(_state(shots, generated), config=cfg)
 
-    # First interrupt is for s1 (shot-list order).
     st = await graph.aget_state(cfg)
-    assert st.interrupts[0].value["shot_id"] == "s1"
-
-    # Resume s1 -> approve. Node re-runs, s1's interrupt returns, s2's now pauses.
-    # (Mid-batch, LangGraph reports the still-pending interrupt via st.interrupts;
-    # st.next is an unreliable indicator here, so we assert on st.interrupts.)
-    await graph.ainvoke(Command(resume={"resolution": "approve"}), config=cfg)
-    st = await graph.aget_state(cfg)
-    assert len(st.interrupts) == 1  # still paused on exactly one shot
-    assert st.interrupts[0].value["shot_id"] == "s2"
-
-    # Resume s2 -> accept_fallback. Now it finishes.
-    result = await graph.ainvoke(Command(resume={"resolution": "accept_fallback"}), config=cfg)
-    st = await graph.aget_state(cfg)
-    assert st.next == ()
+    assert st.next == ()  # ran to completion
     assert not st.interrupts
 
     by_id = {s["shot_id"]: s for s in result["shot_list"]}
-    # Resolutions routed to the correct shots, in order.
     assert by_id["s1"]["status"] == "passed"
-    assert by_id["s2"]["status"] == "fallback_requested"
-    # Both review entries enqueued, no duplication across the resumes.
-    assert {e["shot_id"] for e in result["human_review_queue"]} == {"s1", "s2"}
-    assert len(result["human_review_queue"]) == 2
+    assert by_id["s2"]["status"] == "passed"
+    assert result["generated_shots"]["s1"].get(CONTINUITY_APPROVED_KEY)
+    assert result["generated_shots"]["s2"].get(CONTINUITY_APPROVED_KEY)
+    assert result["human_review_queue"] == []
 
 
 # ---------------------------------------------------------------------------

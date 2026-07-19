@@ -4,9 +4,10 @@ import type { Final } from "@/lib/types";
 
 interface FinalPanelProps {
   final: Final;
+  jobId?: string;
 }
 
-export default function FinalPanel({ final }: FinalPanelProps) {
+export default function FinalPanel({ final, jobId }: FinalPanelProps) {
   const maxH = 40;
   const ratioTiles = final.ratios.map((r) => {
     const ratio = r.w / r.h;
@@ -55,10 +56,15 @@ export default function FinalPanel({ final }: FinalPanelProps) {
                   <div style={{ fontSize: 11, color: "rgba(249,244,234,0.72)", marginTop: 2 }}>{tile.use}</div>
                 </div>
                 {tile.url ? (
+                  // Direct link to the same-origin proxy URL. The backend sends
+                  // Content-Disposition: attachment, so a plain anchor click
+                  // streams the file straight to disk without navigating away —
+                  // no fetch/blob/programmatic-click needed (that pattern loses
+                  // the user-activation gesture during the multi-second blob
+                  // download and the browser drops the save).
                   <a
-                    href={tile.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                    href={jobId ? `/api/jobs/${jobId}/download/${tile.id}` : tile.url}
+                    download={`${tile.id}.mp4`}
                     style={{
                       fontFamily: "var(--font-sans)",
                       fontSize: "11.5px",
@@ -67,8 +73,8 @@ export default function FinalPanel({ final }: FinalPanelProps) {
                       border: "1px solid var(--accent)",
                       background: "transparent",
                       color: "var(--accent)",
-                      cursor: "pointer",
                       textDecoration: "none",
+                      cursor: "pointer",
                       flexShrink: 0,
                     }}
                   >
@@ -76,7 +82,6 @@ export default function FinalPanel({ final }: FinalPanelProps) {
                   </a>
                 ) : (
                   <button
-                    className="pcs-final-dl"
                     disabled
                     style={{
                       fontFamily: "var(--font-sans)",

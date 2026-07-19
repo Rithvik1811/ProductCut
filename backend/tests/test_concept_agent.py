@@ -92,7 +92,7 @@ TRUTHS = ELECTRONICS_TRUTHS
 # Convenience helpers
 # ---------------------------------------------------------------------------
 
-def _beats(target_length_sec: int = 18) -> list[dict]:
+def _beats(target_length_sec: int = 30) -> list[dict]:
     return [
         {"t_start": 0, "t_end": 3, "line": "Your phone slides off every stand -- not this one."},
         {"t_start": 3, "t_end": 6, "line": "This one grips with a dual radiator port design."},
@@ -324,7 +324,7 @@ def test_natural_transformed_line_passes_voice_checks_cleanly():
     v = _variant("v1", "hook_problem_product_cta", "pattern interrupt", "curiosity", gti=("e0", "e1", "e2"))
     v["beats"][1]["line"] = "That port? Actual rubber seal -- it won't ever leak."
 
-    problems = _validate_variant(v, _TRUTH_CATEGORIES, 18, _TRUTH_FACTS)
+    problems = _validate_variant(v, _TRUTH_CATEGORIES, 30, _TRUTH_FACTS)
 
     assert problems == [], f"natural transformed line should pass cleanly, got: {problems}"
 
@@ -934,7 +934,7 @@ async def test_no_human_reprompt_for_skincare_product():
             "beats": [
                 {"t_start": 0, "t_end": 3, "line": "Most serums waste half the bottle. Not this one."},
                 {"t_start": 3, "t_end": 8, "line": "That silicone tip gives you exactly one measured dose."},
-                {"t_start": 8, "t_end": 18, "line": "So tap to get yours."},
+                {"t_start": 8, "t_end": 30, "line": "So tap to get yours."},
             ],
         },
         {
@@ -947,7 +947,7 @@ async def test_no_human_reprompt_for_skincare_product():
             "beats": [
                 {"t_start": 0, "t_end": 3, "line": "Your serum costs 3x this and drips everywhere."},
                 {"t_start": 3, "t_end": 8, "line": "That precision tip gives you exactly one dose."},
-                {"t_start": 8, "t_end": 18, "line": "So tap to get yours."},
+                {"t_start": 8, "t_end": 30, "line": "So tap to get yours."},
             ],
         },
         {
@@ -960,7 +960,7 @@ async def test_no_human_reprompt_for_skincare_product():
             "beats": [
                 {"t_start": 0, "t_end": 3, "line": "That gold color? Not dye."},
                 {"t_start": 3, "t_end": 8, "line": "The silicone tip keeps it pure from bottle to skin."},
-                {"t_start": 8, "t_end": 18, "line": "So tap to get yours."},
+                {"t_start": 8, "t_end": 30, "line": "So tap to get yours."},
             ],
         },
         {
@@ -973,7 +973,7 @@ async def test_no_human_reprompt_for_skincare_product():
             "beats": [
                 {"t_start": 0, "t_end": 3, "line": "Two drops every morning -- not 10, not 20."},
                 {"t_start": 3, "t_end": 8, "line": "That silicone tip means you never fumble it half-asleep."},
-                {"t_start": 8, "t_end": 18, "line": "So tap to get yours."},
+                {"t_start": 8, "t_end": 30, "line": "So tap to get yours."},
             ],
         },
     ]

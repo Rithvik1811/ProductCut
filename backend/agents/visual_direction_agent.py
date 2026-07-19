@@ -47,10 +47,48 @@ def _parse_json_response(raw: str) -> dict:
     return json.loads(stripped)
 
 
+def _scene_inspiration_block(research_facts: list) -> str:
+    """SCENE INSPIRATION prompt block built from web-researched use_case /
+    visual_moment facts. Returns "" when empty so the facts-absent prompt is
+    byte-identical to the pre-injection prompt (regression safety)."""
+    if not research_facts:
+        return ""
+    lines = [
+        "─────────────────────────────────────────────────────",
+        "SCENE INSPIRATION FROM WEB RESEARCH",
+        "─────────────────────────────────────────────────────",
+        "Researched real-world scenes and use contexts for this product (from public",
+        "web sources — NOT visible in the product photos):",
+    ]
+    for f in research_facts:
+        lines.append(
+            f"- [{f.get('fact_id', '?')}] ({f.get('category', '')}) {f.get('claim', '')}"
+        )
+    lines += [
+        "",
+        "How to use these:",
+        "- They are SCENE and SETTING inspiration: where a beat takes place, what a person",
+        "  does with the product, which specific cinematic moment a beat stages.",
+        "- When a beat's VO line evokes one of these scenes, DIRECT that exact moment: pick",
+        "  the setting, human_action, shot type, camera move, and framing that stage it.",
+        "- story_context may draw its setting and arc from these scenes.",
+        "",
+        "FIREWALL — what these facts may NEVER do:",
+        "- They NEVER describe the product's appearance. Every visible product detail (color,",
+        "  material, shape, parts, markings) comes ONLY from the photo truth table.",
+        "- focus_feature_truth_id must ALWAYS be a real truth_id from the truth table — NEVER",
+        "  an r* research id. Research facts inspire the scene AROUND the truth, not the truth.",
+        "- Never stage a spec, number, or claim as on-screen text; these inspire SCENES, not copy.",
+        "- If a scene contradicts what the photos show the product to be, the photos win — drop it.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _build_system_prompt(
     beat_count: int,
     truth_ids: list[str],
     human_affordance: bool,
+    research_facts: Optional[list] = None,
 ) -> str:
     last = beat_count - 1
     human_target_note = (
@@ -146,7 +184,7 @@ SHOT TYPE GUIDANCE
 
 {human_target_note}
 
-─────────────────────────────────────────────────────
+{_scene_inspiration_block(research_facts or [])}─────────────────────────────────────────────────────
 OUTPUT FORMAT
 ─────────────────────────────────────────────────────
 Return ONLY valid JSON, no preamble or commentary:
@@ -264,6 +302,7 @@ async def generate_visual_direction(
     winning_script: WinningScript,
     product_truths: list[ProductTruth],
     client: Optional[AsyncOpenAI] = None,
+    research_facts: Optional[list] = None,
 ) -> VisualDirection:
     """Run the Visual Direction Agent: one LLM call, one bounded re-prompt on
     validation failure, then per-beat fallback for anything still invalid.
@@ -292,7 +331,7 @@ async def generate_visual_direction(
         f"Product truths:\n{_format_truths(product_truths)}"
     )
 
-    system_prompt = _build_system_prompt(beat_count, truth_ids, human_affordance)
+    system_prompt = _build_system_prompt(beat_count, truth_ids, human_affordance, research_facts)
 
     try:
         messages = [
@@ -427,9 +466,16 @@ async def generate_visual_direction(
 
 async def visual_direction_agent_node(state: ProductCutState) -> dict:
     """LangGraph node wrapper: runs between merge_validator and treatment_agent."""
+    _research = state.get("product_research") or {}
+    research_facts = _research.get("facts", []) if _research.get("performed") else []
+    scene_facts = [
+        f for f in research_facts
+        if f.get("category") in ("use_case", "visual_moment")
+    ]
     vd = await generate_visual_direction(
         winning_script=state["winning_script"],
         product_truths=state.get("product_truths", []),
+        research_facts=scene_facts,
     )
     human_beats = sum(1 for b in vd["beat_visual_directions"] if b["human_presence"] == "yes")
     trace_note = (
