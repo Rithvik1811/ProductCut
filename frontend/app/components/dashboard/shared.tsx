@@ -8,6 +8,13 @@ export const SCORE_META: { key: ScoreKey; label: string }[] = [
   { key: "tone", label: "Tone" },
 ];
 
+// Every axis (hook/pacing/completion/cta/tone) and the composite are scored
+// by the backend on a shared 1-5 rubric (agents/meta_critic.py), which
+// studio/page.tsx's critic_score handler multiplies by 100 for display —
+// so the real max a displayed score can reach is 5 * 100 = 500, NOT 100.
+// Bar widths must divide by this, not treat the raw number as a percentage.
+export const SCORE_MAX = 500;
+
 export const CATEGORY: Record<string, string> = {
   // Real backend categories (graph/state.py v11)
   color: "Color",
