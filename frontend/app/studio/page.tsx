@@ -26,9 +26,9 @@ import "./studio.css";
 const STEP_MS = 340;
 const HISTORY_KEY = "pc-job-history";
 
-// Map LangGraph node names → pipeline phase display strings
+// Map LangGraph node names → pipeline phase display strings.
+// Keys must match the compiled node names emitted on on_chain_start events.
 const NODE_TO_PHASE: Record<string, string> = {
-  ingest_node: "Ingest",
   brand_research_node: "Ingest",
   product_truth_extractor: "Truths",
   concept_agent: "Scripts",
@@ -44,10 +44,11 @@ const NODE_TO_PHASE: Record<string, string> = {
   treatment_agent: "Treatment",
   shot_list_agent: "Budget",
   budget_gate: "Budget",
-  video_gen_node: "Shots",
-  ken_burns_fallback_node: "Shots",
+  video_gen: "Shots",           // Bug 8: was "video_gen_node" — wrong compiled name
+  ken_burns_fallback: "Shots",  // Bug 8: was "ken_burns_fallback_node"
   continuity_agent: "Continuity",
   continuity_gate: "Continuity",
+  voice_direction_agent: "Delivery",
   voiceover_caption_agent: "Delivery",
   assembly_agent: "Delivery",
   format_export_node: "Delivery",
@@ -101,6 +102,9 @@ interface State {
   interruptResolution: InterruptResolution | null;
   final: Final | null;
 
+  error: string | null;
+  lastResolvedShotId: string | null;
+
   hoveredTruthId: string | null;
   budgetOpenId: string | null;
   shotOpenId: string | null;
@@ -148,6 +152,9 @@ function initialState(): State {
     interruptResolution: null,
     final: null,
 
+    error: null,
+    lastResolvedShotId: null,
+
     hoveredTruthId: null,
     budgetOpenId: null,
     shotOpenId: null,
@@ -171,7 +178,8 @@ export default function StudioPage() {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const timersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const jobRef = useRef<WebSocket | null>(null);
-  const jobIdRef = useRef<string | null>(null);   // mirror of state.jobId for callbacks
+  const jobIdRef = useRef<string | null>(null);       // always synced to state.jobId via effect
+  const noReconnectRef = useRef(false);               // bug 2: suppress onclose reconnect when intentionally closed
   const startedAtRef = useRef(0);
   const elapsedIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -209,12 +217,54 @@ export default function StudioPage() {
       if (params.get("view") === "library") setState({ status: "library" });
     } catch { /* ignore */ }
 
+    // Bug 11: auto-reconnect + seed Library history from DB on startup
+    fetch(`${getApiBase()}/jobs`)
+      .then((r) => r.ok ? r.json() : Promise.reject(r.status))
+      .then((jobs: Array<{ job_id: string; status: string; brief?: string; created_at: string }>) => {
+        // Merge DB jobs into history so badge count and Library are correct immediately
+        setState((s) => {
+          const localById = new Map(s.history.map((h) => [h.jobId, h]));
+          const merged: HistoryEntry[] = jobs.map((j) => {
+            const local = localById.get(j.job_id);
+            if (local) return local;
+            return {
+              productName: j.brief ? j.brief.slice(0, 60) : j.job_id.slice(0, 8),
+              date: new Date(j.created_at).getTime(),
+              truths: [],
+              final: null,
+              jobId: j.job_id,
+            };
+          });
+          return { history: merged };
+        });
+        if (jobIdRef.current) return;  // onGenerate already fired this session
+        // N6: only reconnect to "running" — "ingested" means the WS was never opened
+        const running = jobs.find((j) => j.status === "running");
+        if (running) {
+          setState({ status: "dashboard", jobId: running.job_id, jobDone: false });
+        }
+      })
+      .catch(() => { /* best-effort */ });
+
     return () => {
       clearTimers();
-      jobRef.current?.close();
+      // Bug 2: null handlers before close so unmount doesn't schedule a ghost reconnect
+      if (jobRef.current) {
+        jobRef.current.onclose = null;
+        jobRef.current.onerror = null;
+        jobRef.current.onmessage = null;
+        jobRef.current.close();
+        jobRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep jobIdRef in sync with state.jobId so resolveInterrupt always has the current value
+  // regardless of whether the job came from onGenerate or a mount-time reconnect (bug 14).
+  useEffect(() => {
+    jobIdRef.current = state.jobId;
+  }, [state.jobId]);
 
   // Auto-reconnect: if HMR reloads the component while we're mid-job (state preserved
   // but jobRef.current is null), reopen the WS so run.completed fires the recovery fetch.
@@ -489,6 +539,9 @@ export default function StudioPage() {
           setState((s) => ({
             drift: { ...s.drift, [payload.shot_id]: payload.drift_score },
             driftThreshold: payload.threshold,
+            // N1: clear dedup key once the shot has new activity — a genuine second
+            // interrupt for this shot after re-generation must not be suppressed.
+            lastResolvedShotId: s.lastResolvedShotId === payload.shot_id ? null : s.lastResolvedShotId,
           }));
           break;
         }
@@ -496,16 +549,21 @@ export default function StudioPage() {
         case "interrupt_requested": {
           // C2: {review: {shot_id, drift_score, candidate_frame_uris}, queue_position?}
           const review = payload.review;
-          const interrupt: Interrupt = {
-            shotId: review.shot_id,
-            label: `Shot ${review.shot_id.slice(-6)}`,
-            driftScore: review.drift_score,
-            reason: "Continuity drift exceeded retry cap. Please review the generated candidates.",
-            candidates: review.candidate_frame_uris.length
-              ? review.candidate_frame_uris.map((uri, i) => ({ id: `c${i}`, note: uri }))
-              : [{ id: "c0", note: "No candidate frames available" }],
-          };
-          setState({ interrupt });
+          setState((s) => {
+            // Bug 3: after resolveInterrupt the pipeline resumes and may re-emit this event
+            // for the same shot before the next node runs — suppress it.
+            if (s.lastResolvedShotId === review.shot_id) return {};
+            const interrupt: Interrupt = {
+              shotId: review.shot_id,
+              label: `Shot ${review.shot_id.slice(-6)}`,
+              driftScore: review.drift_score,
+              reason: "Continuity drift exceeded retry cap. Please review the generated candidates.",
+              candidates: review.candidate_frame_uris.length
+                ? review.candidate_frame_uris.map((uri, i) => ({ id: `c${i}`, note: uri }))
+                : [{ id: "c0", note: "No candidate frames available" }],
+            };
+            return { interrupt };
+          });
           break;
         }
 
@@ -521,15 +579,16 @@ export default function StudioPage() {
             { ...FINAL_RATIOS[1], url: ex?.aspect_1x1 },
             { ...FINAL_RATIOS[2], url: ex?.aspect_16x9 },
           ];
-          const final: Final = { duration: "18s", masterCutUri: master_cut_uri, ratios: ratiosWithUrls };
+          const final: Final = { duration: "30s", masterCutUri: master_cut_uri, ratios: ratiosWithUrls };
           setState((s) => {
             const entry: HistoryEntry = {
               productName: s.brief || "Product Ad",
               date: Date.now(),
               truths: s.truths,
               final,
+              jobId: s.jobId ?? undefined,
             };
-            const history = [entry, ...s.history].slice(0, 20);
+            const history = [entry, ...s.history.filter(h => h.jobId !== entry.jobId)].slice(0, 20);
             try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch { /* ignore */ }
             return { final, jobDone: true, phase: "Delivery", history };
           });
@@ -552,12 +611,59 @@ export default function StudioPage() {
   // ---- WebSocket connection ----
   const openWebSocket = useCallback(
     (jobId: string, resolution?: string) => {
-      // Close existing connection
+      // Bug 2: null ALL handlers before intentional close so the ghost onclose
+      // does not fire and schedule an unwanted reconnect with the old jobId.
       if (jobRef.current) {
+        jobRef.current.onclose = null;
+        jobRef.current.onerror = null;
         jobRef.current.onmessage = null;
         jobRef.current.close();
         jobRef.current = null;
       }
+      // Bug 2: a fresh open means any previous noReconnect flag is now stale.
+      noReconnectRef.current = false;
+
+      const apiBase = getApiBase();
+
+      // Bug 10: rehydrate panels from checkpoint on every WS open (handles reconnect/resume).
+      // Fires concurrently with WS connect; any live events that arrive will overwrite stale data.
+      fetch(`${apiBase}/jobs/${jobId}/state`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data: { state?: Record<string, unknown>; next?: string[] } | null) => {
+          if (!data?.state) return;
+          const st = data.state;
+          // If the job already completed (e.g. fast run or page-reload), synthesise job_complete.
+          const masterCutUri = st["master_cut_uri"] as string | undefined;
+          const ex = st["exports"] as { aspect_9x16?: string; aspect_1x1?: string; aspect_16x9?: string } | undefined;
+          if (masterCutUri && ex) {
+            handleEvent({
+              type: "job_complete",
+              payload: {
+                master_cut_uri: masterCutUri,
+                exports: {
+                  aspect_9x16: ex.aspect_9x16 ?? "",
+                  aspect_1x1: ex.aspect_1x1 ?? "",
+                  aspect_16x9: ex.aspect_16x9 ?? "",
+                },
+              },
+            });
+            return;
+          }
+          // Rehydrate truths so the panel isn't blank after reconnect.
+          const rawTruths = st["truths"] as Array<{ truth_id: string; fact: string; category: string }> | undefined;
+          if (rawTruths?.length) {
+            setState((s) => {
+              if (s.truths.length) return {};
+              const truths: Truth[] = rawTruths.map((t) => ({
+                id: t.truth_id,
+                category: t.category as Truth["category"],
+                fact_text: t.fact,
+              }));
+              return { truths };
+            });
+          }
+        })
+        .catch(() => { /* best-effort */ });
 
       const wsBase = getWsBase();
       const url = resolution
@@ -570,23 +676,18 @@ export default function StudioPage() {
       ws.onmessage = (event: MessageEvent) => {
         try {
           const msg: { type: string; payload: unknown } = JSON.parse(event.data as string);
+
           if (msg.type === "run.started") return;
+
           if (msg.type === "run.completed") {
-            // If the pipeline finished before we connected (e.g. page reload / WS reconnect),
-            // the graph emits run.completed immediately with no business events. Fall back to
-            // the REST state endpoint to reconstruct the delivery section.
-            setState((s) => {
-              if (s.jobDone) return {};  // already have delivery data
-              return {};
-            });
-            const apiBase = getApiBase();
+            noReconnectRef.current = true;
+            // Fetch final state in case the pipeline finished before we connected.
             fetch(`${apiBase}/jobs/${jobId}/state`)
-              .then((r) => r.json())
-              .then((data: { state?: Record<string, unknown>; next?: string[] }) => {
-                const st = data.state;
-                if (!st) return;
-                const masterCutUri = st["master_cut_uri"] as string | undefined;
-                const ex = st["exports"] as { aspect_9x16?: string; aspect_1x1?: string; aspect_16x9?: string } | undefined;
+              .then((r) => r.ok ? r.json() : null)
+              .then((data: { state?: Record<string, unknown>; next?: string[] } | null) => {
+                const st = data?.state;
+                const masterCutUri = st?.["master_cut_uri"] as string | undefined;
+                const ex = st?.["exports"] as { aspect_9x16?: string; aspect_1x1?: string; aspect_16x9?: string } | undefined;
                 if (masterCutUri && ex) {
                   handleEvent({
                     type: "job_complete",
@@ -599,15 +700,45 @@ export default function StudioPage() {
                       },
                     },
                   });
+                } else {
+                  // N3: graph completed but no exports in checkpoint (format_export_node
+                  // skipped, or aget_state threw and we fell back). Stop the spinner so
+                  // the dashboard doesn't spin forever with noReconnect already true.
+                  setState((s) => s.jobDone ? {} : { jobDone: true });
                 }
               })
-              .catch(() => { /* best-effort */ });
+              .catch(() => {
+                // N3: fetch failed entirely — still stop the spinner.
+                setState((s) => s.jobDone ? {} : { jobDone: true });
+              });
             return;
           }
+
           if (msg.type === "run.error") {
-            console.error("[ProductCut] graph error:", (msg.payload as Record<string, unknown>)?.error);
+            // Bug 5: surface error in UI and stop reconnecting
+            noReconnectRef.current = true;
+            const errMsg = String((msg.payload as Record<string, unknown>)?.error ?? "Pipeline failed");
+            setState({ error: errMsg, jobDone: true });
             return;
           }
+
+          if (msg.type === "run.interrupted") {
+            // Bug 9: pipeline is paused at interrupt() — wait for user to resolve before reconnecting.
+            // The interrupt_requested C2 event (handled below) already populated state.interrupt.
+            noReconnectRef.current = true;
+            return;
+          }
+
+          if (msg.type === "run.busy") {
+            // N4: don't permanently block — the existing handler may disconnect within
+            // seconds. Schedule a retry so the client catches up without user action.
+            // (noReconnectRef stays false so onclose's 2s retry still fires naturally,
+            // but add an extra 5s delay here in case the close hasn't happened yet.)
+            const t = setTimeout(() => openWebSocket(jobId), 5000);
+            timersRef.current.push(t);
+            return;
+          }
+
           handleEvent(msg as JobEvent);
         } catch (err) {
           console.error("[ProductCut] WS parse error:", err);
@@ -615,20 +746,20 @@ export default function StudioPage() {
       };
 
       ws.onerror = (err) => console.error("[ProductCut] WebSocket error:", err);
+
       ws.onclose = () => {
-        console.log("[ProductCut] WebSocket closed for job:", jobId);
+        // Bug 2: ignore close events from a WS we already replaced.
+        if (jobRef.current !== ws) return;
         jobRef.current = null;
-        // If the job isn't done, re-open automatically to resume the graph run.
-        setState((s) => {
-          if (!s.jobDone) {
-            // Delay slightly to avoid hammering the server on rapid close/open cycles.
-            setTimeout(() => openWebSocket(jobId), 2000);
-          }
-          return {};
-        });
+        // Don't reconnect if we intentionally stopped (error, complete, interrupted, busy).
+        if (noReconnectRef.current) return;
+        // Bug 2: schedule outside setState (no side effects in updaters); register timer so
+        // clearTimers() can cancel it on reset/unmount.
+        const t = setTimeout(() => openWebSocket(jobId), 2000);
+        timersRef.current.push(t);
       };
     },
-    [handleEvent],
+    [handleEvent, setState],
   );
 
   // ---- generate -> live dashboard ----
@@ -655,7 +786,9 @@ export default function StudioPage() {
       const data = (await res.json()) as { job_id: string };
       jobId = data.job_id;
     } catch (err) {
-      console.error("[ProductCut] Failed to create job:", err);
+      // Bug 13: show error in UI instead of silent console.error
+      const msg = err instanceof Error ? err.message : "Failed to start job";
+      setState({ error: msg });
       return;
     }
 
@@ -674,9 +807,17 @@ export default function StudioPage() {
 
   const resolveInterrupt = useCallback(
     (resolution: InterruptResolution) => {
+      // Bug 14: jobIdRef is kept in sync with state.jobId via useEffect, so it's correct
+      // even when the job was set by mount-time reconnect rather than onGenerate.
       const jobId = jobIdRef.current;
       if (!jobId) return;
-      setState({ interrupt: null, interruptResolution: resolution });
+      // Bug 3: record which shot was resolved so interrupt_requested for the same shot
+      // after resume is suppressed (backend may re-emit it before the next node runs).
+      setState((s) => ({
+        interrupt: null,
+        interruptResolution: resolution,
+        lastResolvedShotId: s.interrupt?.shotId ?? null,
+      }));
       openWebSocket(jobId, resolution);
     },
     [openWebSocket, setState],
@@ -684,25 +825,110 @@ export default function StudioPage() {
 
   const resetPipeline = useCallback(() => {
     clearTimers();
-    jobRef.current?.close();
-    jobRef.current = null;
+    // Bug 2: null handlers before close so ghost onclose doesn't schedule a reconnect.
+    if (jobRef.current) {
+      jobRef.current.onclose = null;
+      jobRef.current.onerror = null;
+      jobRef.current.onmessage = null;
+      jobRef.current.close();
+      jobRef.current = null;
+    }
+    noReconnectRef.current = false;
     jobIdRef.current = null;
     setState((s) => ({ ...initialState(), theme: s.theme, history: s.history }));
   }, [setState]);
 
   // ---- library ----
-  const openLibrary = useCallback(() => setState({ status: "library" }), [setState]);
+  const openLibrary = useCallback(() => {
+    setState({ status: "library" });
+    // Fetch all jobs from DB and merge into history (DB is source of truth)
+    fetch(`${getApiBase()}/jobs`)
+      .then((r) => r.ok ? r.json() : Promise.reject(r.status))
+      .then((jobs: Array<{ job_id: string; brief?: string; status: string; created_at: string }>) => {
+        setState((s) => {
+          const localById = new Map(s.history.map((h) => [h.jobId, h]));
+          const merged: HistoryEntry[] = jobs.map((j) => {
+            const local = localById.get(j.job_id);
+            if (local) return local;
+            return {
+              productName: j.brief ? j.brief.slice(0, 60) : j.job_id.slice(0, 8),
+              date: new Date(j.created_at).getTime(),
+              truths: [],
+              final: null,
+              jobId: j.job_id,
+            };
+          });
+          return { history: merged };
+        });
+      })
+      .catch(() => { /* best-effort — show localStorage history */ });
+  }, [setState]);
   const closeLibrary = useCallback(() => {
     setState((s) => ({ status: s.truths.length ? "dashboard" : "wizard" }));
   }, [setState]);
   const openHistoryItem = useCallback(
-    (entry: HistoryEntry) => {
+    async (entry: HistoryEntry) => {
+      let final = entry.final;
+      let truths = entry.truths;
+
+      // DB-only entry: no cached data — fetch full state from checkpoint
+      if (entry.jobId && !final) {
+        try {
+          const res = await fetch(`${getApiBase()}/jobs/${entry.jobId}/state`);
+          if (res.ok) {
+            const data: { state?: Record<string, unknown> } = await res.json();
+            const st = data.state ?? {};
+            // Reconstruct truths
+            const rawTruths = st["truths"] as Array<{ truth_id: string; fact: string; category: string }> | undefined;
+            if (rawTruths?.length) {
+              truths = rawTruths.map((t) => ({
+                id: t.truth_id,
+                fact_text: t.fact,
+                category: t.category as import("@/lib/types").TruthCategory,
+              }));
+            }
+            // Reconstruct final
+            const masterCutUri = st["master_cut_uri"] as string | undefined;
+            const ex = st["exports"] as { aspect_9x16?: string; aspect_1x1?: string; aspect_16x9?: string } | undefined;
+            if (ex) {
+              final = {
+                duration: "30s",
+                masterCutUri,
+                ratios: [
+                  { ...FINAL_RATIOS[0], url: ex.aspect_9x16 },
+                  { ...FINAL_RATIOS[1], url: ex.aspect_1x1 },
+                  { ...FINAL_RATIOS[2], url: ex.aspect_16x9 },
+                ],
+              };
+            }
+          }
+        } catch { /* best-effort */ }
+      }
+
+      if (entry.jobId && final) {
+        try {
+          const res = await fetch(`/api/jobs/${entry.jobId}/exports`);
+          if (res.ok) {
+            const fresh: Record<string, string> = await res.json();
+            final = {
+              ...final,
+              masterCutUri: fresh.master_cut || final.masterCutUri,
+              ratios: (final.ratios ?? FINAL_RATIOS).map((r) => ({
+                ...r,
+                url: fresh[`aspect_${r.id}`] ?? r.url,
+              })),
+            };
+          }
+        } catch {
+          // OSS not configured or network error — show with stale URLs
+        }
+      }
       setState({
         status: "dashboard",
         jobDone: true,
         phase: "Delivery",
         phaseLabel: "",
-        truths: entry.truths,
+        truths,
         scripts: [],
         activeScriptId: null,
         winnerId: null,
@@ -713,7 +939,8 @@ export default function StudioPage() {
         drift: {},
         interrupt: null,
         interruptResolution: null,
-        final: entry.final,
+        final,
+        jobId: entry.jobId ?? null,
       });
     },
     [setState],
@@ -794,6 +1021,38 @@ export default function StudioPage() {
         />
       )}
 
+      {state.error && (
+        <div
+          role="alert"
+          style={{
+            position: "fixed",
+            bottom: "1.5rem",
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "var(--error, #c0392b)",
+            color: "#fff",
+            padding: "0.75rem 1.25rem",
+            borderRadius: "8px",
+            display: "flex",
+            alignItems: "center",
+            gap: "1rem",
+            zIndex: 9999,
+            maxWidth: "min(90vw, 480px)",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+            fontSize: "0.875rem",
+          }}
+        >
+          <span style={{ flex: 1 }}>{state.error}</span>
+          <button
+            onClick={() => setState({ error: null })}
+            style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", padding: "0 0.25rem", fontSize: "1rem", lineHeight: 1 }}
+            aria-label="Dismiss error"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {state.status === "dashboard" && (
         <Dashboard
           phase={state.phase}
@@ -827,6 +1086,7 @@ export default function StudioPage() {
           onRetry={() => resolveInterrupt("retry_with_edit")}
           onFallback={() => resolveInterrupt("accept_fallback")}
           final={state.final}
+          jobId={state.jobId}
         />
       )}
 

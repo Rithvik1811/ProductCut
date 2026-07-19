@@ -24,3 +24,8 @@ backend/derisk/outputs/
 
 # Runtime-generated upload artifacts (saved by POST /jobs at request time)
 backend/uploads/
+
+# Tool caches
+.playwright-mcp/
+.impeccable/
+frontend/.impeccable/

@@ -20,6 +20,12 @@ Two event families are forwarded, both with envelope {type, job_id, ts, payload}
 """
 from __future__ import annotations
 
+import asyncio
+import sys
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import json
 import logging
 import os
@@ -37,7 +43,7 @@ from dotenv import load_dotenv
 # exported vars manually or passed `uvicorn --env-file`.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from fastapi import FastAPI, File, Form, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -45,6 +51,25 @@ from graph.build import build_graph
 from graph.events import EventType, build_event
 
 _KNOWN_C2_TYPES = frozenset(get_args(EventType))
+
+# Bug 1: per-job concurrency guard — prevents two simultaneous astream_events
+# calls on the same thread_id which would corrupt checkpoint writes.
+_run_locks: dict[str, asyncio.Lock] = {}
+
+# Bug 8: node names the compiled graph emits on on_chain_start — used to
+# synthesize node_started C2 events so the phase indicator advances.
+_KNOWN_NODE_NAMES = frozenset({
+    "brand_research_node", "product_truth_extractor", "concept_agent",
+    "hook_checker", "pacing_checker", "body_checker", "cta_checker",
+    "tone_checker", "meta_critic", "merge_validator", "copy_editor",
+    "visual_direction_agent", "treatment_agent", "shot_list_agent",
+    "budget_gate", "video_gen", "ken_burns_fallback", "continuity_agent",
+    "continuity_gate", "voice_direction_agent", "voiceover_caption_agent",
+    "assembly_agent", "format_export_node",
+})
+
+# Bug 15: valid ?resolution= values for the WS resume path.
+_VALID_RESOLUTIONS = frozenset({"approve", "retry_with_edit", "accept_fallback"})
 
 logging.basicConfig(
     level=logging.INFO,
@@ -100,6 +125,17 @@ async def lifespan(app: FastAPI):
     logger.info("Building LangGraph graph...")
     app.state.graph = await build_graph(exit_stack=app.state.exit_stack)
     logger.info("Graph compiled and ready.")
+    # Bug 6: ensure jobs/seller_direction tables exist before serving any traffic
+    try:
+        from db.jobs import connect as db_connect, init_tables
+        conn = await db_connect()
+        try:
+            await init_tables(conn)
+            logger.info("DB tables verified/created.")
+        finally:
+            await conn.close()
+    except Exception as exc:
+        logger.error("Could not init DB tables: %s — jobs will fail if tables are absent.", exc)
     try:
         yield
     finally:
@@ -130,12 +166,19 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 @app.get("/health")
 async def health() -> dict:
-    return {
+    from fastapi.responses import JSONResponse
+    graph = getattr(app.state, "graph", None)
+    checkpointer_type = "none"
+    if graph is not None:
+        cp = getattr(graph, "checkpointer", None)
+        checkpointer_type = type(cp).__name__ if cp else "none"
+    return JSONResponse({
         "status": "ok",
         "service": "productcut-backend",
-        "graph_ready": getattr(app.state, "graph", None) is not None,
+        "graph_ready": graph is not None,
+        "checkpointer": checkpointer_type,
         "ts": _now_iso(),
-    }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +222,7 @@ async def create_job_endpoint(
     if notes:
         sd["freeform"] = notes
 
-    # Persist to DB (best-effort; graph can run without it if DB is unavailable)
+    # Persist to DB — required: brief/photos reach the graph exclusively via this row.
     try:
         from db.jobs import connect as db_connect, create_job, upsert_seller_direction
         conn = await db_connect()
@@ -190,7 +233,8 @@ async def create_job_endpoint(
         finally:
             await conn.close()
     except Exception as exc:
-        logger.warning("DB unavailable — job %s will run without persistence: %s", job_id, exc)
+        logger.error("DB write failed for job %s: %s", job_id, exc)
+        raise HTTPException(status_code=503, detail="Database unavailable — could not persist job. Please retry.")
 
     result: dict = {"job_id": job_id}
     if brand_name:
@@ -212,8 +256,9 @@ async def _save_photos(photos: list[UploadFile], job_id: str) -> list[str]:
 
     _CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 
-    for photo in valid:
-        safe = Path(photo.filename).name  # type: ignore[arg-type]
+    for idx, photo in enumerate(valid):
+        # Bug 16: prefix with index to prevent filename collisions overwriting product angles
+        safe = f"{idx}_{Path(photo.filename).name}"  # type: ignore[arg-type]
         content = await photo.read()
         local_path = job_dir / safe
         local_path.write_bytes(content)
@@ -249,7 +294,7 @@ async def list_jobs_endpoint(
             await conn.close()
     except Exception as exc:
         logger.error("list_jobs failed: %s", exc)
-        return []
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -267,16 +312,122 @@ async def get_job_state(job_id: str) -> dict:
     config = {"configurable": {"thread_id": job_id}}
     try:
         snapshot = await graph.aget_state(config)
-        if snapshot is None:
-            return {"job_id": job_id, "state": None, "next": []}
+        if snapshot is None or not snapshot.values:
+            raise HTTPException(status_code=404, detail="No checkpoint found for this job")
         return {
             "job_id": job_id,
-            "state": _jsonable(dict(snapshot.values) if snapshot.values else {}),
+            "state": _jsonable(dict(snapshot.values)),
             "next": list(snapshot.next) if snapshot.next else [],
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("aget_state failed for %s: %s", job_id, exc)
-        return {"job_id": job_id, "state": None, "next": [], "error": str(exc)}
+        raise HTTPException(status_code=500, detail=f"Checkpoint read failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# GET /jobs/{job_id}/exports  — re-sign export URLs for a completed job
+# ---------------------------------------------------------------------------
+
+
+@app.get("/jobs/{job_id}/exports")
+async def refresh_export_urls(job_id: str) -> dict:
+    """Return fresh signed OSS URLs for a job's format exports and master cut.
+
+    Signed URLs expire after 24 h (SIGNED_URL_TTL_SEC). This endpoint re-signs
+    them on demand so the Library can play videos from previous sessions.
+    """
+    import os as _os
+    # Skip signing if OSS credentials are absent (local dev without OSS)
+    if not _os.environ.get("OSS_ACCESS_KEY_ID"):
+        raise HTTPException(status_code=503, detail="OSS not configured")
+
+    from agents._oss import oss_job_asset_key, sign_existing_key
+
+    try:
+        result: dict = {}
+        for ratio_id, filename in [
+            ("aspect_9x16", "exports/9x16.mp4"),
+            ("aspect_1x1",  "exports/1x1.mp4"),
+            ("aspect_16x9", "exports/16x9.mp4"),
+        ]:
+            key = oss_job_asset_key(job_id, filename)
+            label = filename.split("/")[-1]  # e.g. "9x16.mp4"
+            result[ratio_id] = await asyncio.to_thread(
+                sign_existing_key, key,
+                params={"response-content-disposition": f'attachment;filename="{label}"'},
+            )
+
+        master_key = oss_job_asset_key(job_id, "master_cut.mp4")
+        result["master_cut"] = await asyncio.to_thread(sign_existing_key, master_key)
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("refresh_export_urls failed for %s: %s", job_id, exc)
+        raise HTTPException(status_code=500, detail=f"Re-sign failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# GET /jobs/{job_id}/download/{ratio_id}  — proxy OSS video as attachment
+# ---------------------------------------------------------------------------
+# Direct browser fetches to signed OSS URLs are blocked by CORS, so the
+# download button cannot use fetch()+createObjectURL on them. This endpoint
+# fetches from OSS server-side and streams the bytes back with a
+# Content-Disposition: attachment header so the browser saves the file.
+# ---------------------------------------------------------------------------
+
+_DOWNLOAD_RATIO_MAP = {
+    "9x16":   "exports/9x16.mp4",
+    "1x1":    "exports/1x1.mp4",
+    "16x9":   "exports/16x9.mp4",
+    "master": "master_cut.mp4",
+}
+
+
+@app.get("/jobs/{job_id}/download/{ratio_id}")
+async def download_export(job_id: str, ratio_id: str):
+    """Stream a format-export video as a downloadable attachment.
+
+    Proxies the OSS video server-side to avoid browser CORS restrictions on
+    signed URLs. The browser receives the response as a same-origin download.
+    """
+    import os as _os
+    if ratio_id not in _DOWNLOAD_RATIO_MAP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"ratio_id must be one of: {list(_DOWNLOAD_RATIO_MAP)}",
+        )
+    if not _os.environ.get("OSS_ACCESS_KEY_ID"):
+        raise HTTPException(status_code=503, detail="OSS not configured")
+
+    from agents._oss import oss_job_asset_key, sign_existing_key
+    import httpx
+    from starlette.responses import StreamingResponse
+
+    key = oss_job_asset_key(job_id, _DOWNLOAD_RATIO_MAP[ratio_id])
+    try:
+        signed_url = await asyncio.to_thread(sign_existing_key, key)
+    except Exception as exc:
+        logger.error("download_export sign failed for %s/%s: %s", job_id, ratio_id, exc)
+        raise HTTPException(status_code=500, detail=f"Re-sign failed: {exc}")
+
+    filename = f"{ratio_id}.mp4"
+
+    async def _stream():
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream("GET", signed_url) as resp:
+                resp.raise_for_status()
+                async for chunk in resp.aiter_bytes(65536):
+                    yield chunk
+
+    return StreamingResponse(
+        _stream(),
+        media_type="video/mp4",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -292,102 +443,190 @@ async def ws_run(
     brand_url: str = Query(default=""),
     resolution: str = Query(default=""),
 ) -> None:
-    """Run (or resume after interrupt) the graph and forward every event.
-
-    Query params:
-      brand_name   — passed into initial state (CTA + tone context)
-      brand_url    — fetched by brand_research_node
-      resolution   — when non-empty, tries to resume an interrupted job:
-                     approve | retry_with_edit | accept_fallback
-    """
+    """Run (or resume after interrupt) the graph and forward every event."""
     await websocket.accept()
+
+    # Bug 15: validate resolution before doing anything else
+    if resolution and resolution not in _VALID_RESOLUTIONS:
+        await websocket.send_json(_envelope("run.error", job_id, {
+            "error": f"Invalid resolution {resolution!r}. Must be one of: {sorted(_VALID_RESOLUTIONS)}"
+        }))
+        await websocket.close()
+        return
+
     graph = websocket.app.state.graph
     config = {"configurable": {"thread_id": job_id}}
 
-    # Decide: fresh run or resume?
-    input_data: Any = None
-    if resolution:
-        try:
-            from langgraph.types import Command
-            snapshot = await graph.aget_state(config)
-            if snapshot and snapshot.next:
-                input_data = Command(resume={"resolution": resolution})
-                logger.info("Resuming job %s with resolution=%r", job_id, resolution)
-        except Exception as exc:
-            logger.warning("Could not check state for resume of %s: %s", job_id, exc)
+    # Bug 1: per-job concurrency lock — reject a second concurrent run on same thread
+    lock = _run_locks.setdefault(job_id, asyncio.Lock())
+    if lock.locked():
+        await websocket.send_json(_envelope("run.busy", job_id, {
+            "message": "Another session is already running this job"
+        }))
+        await websocket.close()
+        return
 
-    if input_data is None:
-        # Check if a checkpoint already exists — if so, resume from it (pass None).
-        # Only start fresh when there is no prior checkpoint for this thread.
-        try:
-            snapshot = await graph.aget_state(config)
-            has_checkpoint = snapshot is not None and snapshot.values
-        except Exception:
-            has_checkpoint = False
-
-        if has_checkpoint:
-            logger.info("Reconnect: resuming job %s from existing checkpoint (next=%s)", job_id, getattr(snapshot, 'next', None))
-            input_data = None
-        else:
-            # Truly fresh run — load persisted job state from DB
-            initial_state: dict = {"job_id": job_id}
+    async with lock:
+        # Decide: interrupt resume, checkpoint resume, or fresh run?
+        input_data: Any = None
+        if resolution:
             try:
-                from db.jobs import connect as db_connect, read_job_state
-                conn = await db_connect()
-                try:
-                    db_state = await read_job_state(conn, job_id)
-                    if db_state:
-                        initial_state.update(db_state)
-                finally:
-                    await conn.close()
+                from langgraph.types import Command
+                snapshot = await graph.aget_state(config)
+                if snapshot and snapshot.next:
+                    input_data = Command(resume={"resolution": resolution})
+                    logger.info("Resuming job %s with resolution=%r", job_id, resolution)
+                else:
+                    logger.warning("Resolution supplied for %s but no interrupt pending", job_id)
             except Exception as exc:
-                logger.warning("Could not load DB state for job %s: %s", job_id, exc)
+                # Bug 7: aget_state failure is fatal — don't silently proceed
+                logger.error("aget_state failed for %s: %s", job_id, exc)
+                await websocket.send_json(_envelope("run.error", job_id, {"error": "checkpoint read failed"}))
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+                return
 
-            if brand_name:
-                initial_state["brand_name"] = brand_name
-            if brand_url:
-                initial_state["brand_url"] = brand_url
-            input_data = initial_state
+        if input_data is None:
+            try:
+                snapshot = await graph.aget_state(config)
+                has_checkpoint = snapshot is not None and bool(snapshot.values)
+            except Exception as exc:
+                # Bug 7: treat aget_state failure as fatal, not "no checkpoint"
+                logger.error("aget_state failed for job %s: %s", job_id, exc)
+                await websocket.send_json(_envelope("run.error", job_id, {"error": "checkpoint read failed"}))
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+                return
 
-    try:
-        await websocket.send_json(
-            _envelope("run.started", job_id, {"message": "graph run starting"})
-        )
+            if has_checkpoint:
+                logger.info("Reconnect: resuming %s from checkpoint (next=%s)", job_id, list(getattr(snapshot, "next", [])))
+                input_data = None  # astream_events resumes from checkpoint when input is None
+            else:
+                # Fresh run — load brief/photos from the DB row created by POST /jobs.
+                # N5: treat DB read failure as fatal; a missing row means a phantom job_id
+                # (typo or stale link) that would start a doomed run and waste credits.
+                initial_state: dict = {"job_id": job_id}
+                try:
+                    from db.jobs import connect as db_connect, read_job_state
+                    conn = await db_connect()
+                    try:
+                        db_state = await read_job_state(conn, job_id)
+                    finally:
+                        await conn.close()
+                except Exception as exc:
+                    logger.error("DB read failed for job %s: %s", job_id, exc)
+                    await websocket.send_json(_envelope("run.error", job_id, {"error": "database unavailable — cannot start run"}))
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+                    return
+                if not db_state:
+                    logger.error("No DB row for job %s — unknown job_id, aborting", job_id)
+                    await websocket.send_json(_envelope("run.error", job_id, {"error": f"job {job_id!r} not found"}))
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+                    return
+                initial_state.update(db_state)
+                if brand_name:
+                    initial_state["brand_name"] = brand_name
+                if brand_url:
+                    initial_state["brand_url"] = brand_url
+                input_data = initial_state
 
-        async for event in graph.astream_events(
-            input_data, config=config, version="v2"
-        ):
-            if event.get("event") == "on_custom_event" and event.get("name") in _KNOWN_C2_TYPES:
+        # Bug 11: mark job as running so GET /jobs can distinguish in-progress from ingested/failed
+        try:
+            from db.jobs import connect as db_connect, update_job_status
+            _conn = await db_connect()
+            try:
+                await update_job_status(_conn, job_id, "running")
+            finally:
+                await _conn.close()
+        except Exception as exc:
+            logger.warning("Could not mark job %s as running: %s", job_id, exc)
+
+        try:
+            await websocket.send_json(_envelope("run.started", job_id, {"message": "graph run starting"}))
+
+            async for event in graph.astream_events(input_data, config=config, version="v2"):
+                # Bug 8: synthesize node_started C2 events from on_chain_start lifecycle events
+                if event.get("event") == "on_chain_start" and event.get("name") in _KNOWN_NODE_NAMES:
+                    await websocket.send_json(
+                        build_event("node_started", job_id, {"node": event["name"]})
+                    )
+
+                if event.get("event") == "on_custom_event":
+                    name = event.get("name")
+                    if name in _KNOWN_C2_TYPES:
+                        await websocket.send_json(
+                            build_event(name, job_id, _jsonable(event.get("data")))
+                        )
+                        continue  # known C2 event: skip generic passthrough below
+                    # Unknown custom event: fall through to generic passthrough so
+                    # the frontend sees it rather than silently losing it.
+
                 await websocket.send_json(
-                    build_event(event["name"], job_id, _jsonable(event.get("data")))
-                )
-                continue
-            elif event.get("event") == "on_custom_event":
-                logger.warning(
-                    "Unknown custom event %r — forwarding as passthrough.", event.get("name")
+                    _envelope(
+                        event.get("event", "unknown"),
+                        job_id,
+                        {"name": event.get("name"), "data": _jsonable(event.get("data"))},
+                    )
                 )
 
-            await websocket.send_json(
-                _envelope(
-                    event.get("event", "unknown"),
-                    job_id,
-                    {"name": event.get("name"), "data": _jsonable(event.get("data"))},
+            # Bug 9: distinguish interrupt-pause from true completion
+            try:
+                final_snap = await graph.aget_state(config)
+                if final_snap and final_snap.next:
+                    await websocket.send_json(
+                        _envelope("run.interrupted", job_id, {"next": list(final_snap.next)})
+                    )
+                else:
+                    await websocket.send_json(
+                        _envelope("run.completed", job_id, {"message": "graph run finished"})
+                    )
+                    # N2: write "complete" here so the row never stays "running" if
+                    # format_export_node's best-effort update already ran or was skipped.
+                    if not (final_snap and final_snap.next):
+                        try:
+                            from db.jobs import connect as db_connect, update_job_status
+                            _conn2 = await db_connect()
+                            try:
+                                await update_job_status(_conn2, job_id, "complete")
+                            finally:
+                                await _conn2.close()
+                        except Exception as _db_exc:
+                            logger.warning("Could not mark job %s complete: %s", job_id, _db_exc)
+            except Exception:
+                await websocket.send_json(
+                    _envelope("run.completed", job_id, {"message": "graph run finished"})
                 )
-            )
 
-        await websocket.send_json(
-            _envelope("run.completed", job_id, {"message": "graph run finished"})
-        )
-    except WebSocketDisconnect:
-        logger.info("Client disconnected from job_id=%s", job_id)
-    except Exception as exc:
-        logger.exception("Error during graph run for job_id=%s", job_id)
-        try:
-            await websocket.send_json(_envelope("run.error", job_id, {"error": str(exc)}))
-        except Exception:
-            pass
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+        except WebSocketDisconnect:
+            logger.info("Client disconnected from job_id=%s", job_id)
+        except Exception as exc:
+            logger.exception("Error during graph run for job_id=%s", job_id)
+            # Bug 5: mark job failed so GET /jobs won't try to auto-reconnect to it
+            try:
+                from db.jobs import connect as db_connect, update_job_status
+                _conn = await db_connect()
+                try:
+                    await update_job_status(_conn, job_id, "failed")
+                finally:
+                    await _conn.close()
+            except Exception:
+                pass
+            try:
+                await websocket.send_json(_envelope("run.error", job_id, {"error": str(exc)}))
+            except Exception:
+                pass
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass

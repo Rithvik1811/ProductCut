@@ -63,6 +63,7 @@ export interface DashboardProps {
   onFallback: () => void;
 
   final: Final | null;
+  jobId?: string | null;
 }
 
 function formatElapsed(ms: number): string {
@@ -105,6 +106,7 @@ export default function Dashboard(props: DashboardProps) {
     onRetry,
     onFallback,
     final,
+    jobId,
   } = props;
 
   const curPhaseIdx = PHASES.indexOf(phase);
@@ -225,7 +227,7 @@ export default function Dashboard(props: DashboardProps) {
         </section>
       )}
 
-      {final && <FinalPanel final={final} />}
+      {final && <FinalPanel final={final} jobId={jobId ?? undefined} />}
     </div>
   );
 }

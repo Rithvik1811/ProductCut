@@ -171,7 +171,10 @@ async def format_export_node(state: ProductCutState) -> dict:
             "format_export_node: failed to generate exports for job %s: %s",
             job_id, exc, exc_info=True,
         )
-        return {}
+        # Bug 4: re-raise so LangGraph emits run.error and the checkpoint stays
+        # resumable at this node. Swallowing sends the graph to END successfully
+        # with no job_complete, leaving the frontend in a permanent reconnect loop.
+        raise
 
     # Emit the job_complete C2 event so the frontend Delivery section renders.
     voiceover = state.get("voiceover")

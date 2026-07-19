@@ -20,6 +20,7 @@ from tests._fakes import make_content_routed_sync_openai, make_fake_async_openai
 from tests._phase3_graph import (
     patch_assembly_boundaries,
     patch_continuity_boundaries,
+    patch_format_export_boundaries,
     patch_phase3_boundaries,
     patch_visual_direction_boundaries,
     patch_voiceover_boundaries,
@@ -51,7 +52,7 @@ FOUR_GOOD_VARIANTS = [
         "grounding_truth_ids": ["t1", "t4", "t7"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "Scratched already? Not this one."},
                   {"t_start": 3, "t_end": 12, "line": "This one shrugs it off."},
-                  {"t_start": 12, "t_end": 18, "line": "So tap to shop."}],
+                  {"t_start": 12, "t_end": 30, "line": "So tap to shop."}],
     },
     {
         "variant_id": "v2",
@@ -66,7 +67,7 @@ FOUR_GOOD_VARIANTS = [
         "grounding_truth_ids": ["t3", "t4", "t7"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "Stickers leave rings, not this base."},
                   {"t_start": 3, "t_end": 12, "line": "Ours won't."},
-                  {"t_start": 12, "t_end": 18, "line": "So tap to shop."}],
+                  {"t_start": 12, "t_end": 30, "line": "So tap to shop."}],
     },
     {
         "variant_id": "v3",
@@ -77,7 +78,7 @@ FOUR_GOOD_VARIANTS = [
         "grounding_truth_ids": ["t6", "t4", "t7"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "Every detail debossed, not printed."},
                   {"t_start": 3, "t_end": 12, "line": "Built to last."},
-                  {"t_start": 12, "t_end": 18, "line": "So tap to shop."}],
+                  {"t_start": 12, "t_end": 30, "line": "So tap to shop."}],
     },
     {
         "variant_id": "v4",
@@ -88,7 +89,7 @@ FOUR_GOOD_VARIANTS = [
         "grounding_truth_ids": ["t1", "t2", "t4", "t7"],
         "beats": [{"t_start": 0, "t_end": 3, "line": "From scratch, not spotless -- until now."},
                   {"t_start": 3, "t_end": 12, "line": "Built for real life."},
-                  {"t_start": 12, "t_end": 18, "line": "So tap to shop."}],
+                  {"t_start": 12, "t_end": 30, "line": "So tap to shop."}],
     },
 ]
 
@@ -405,6 +406,7 @@ async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatc
     patch_continuity_boundaries(monkeypatch)  # Phase 4: clean drift, loop ends at once
     patch_voiceover_boundaries(monkeypatch)  # Phase 5: parallel branch off merge_validator
     patch_assembly_boundaries(monkeypatch)  # Phase 5: fan-in join off voiceover + continuity_gate
+    patch_format_export_boundaries(monkeypatch)  # Phase 6: format exports without real ffmpeg/OSS
 
     graph = await build_graph()
     initial_state = {
@@ -441,11 +443,13 @@ async def test_truth_extractor_and_concept_agent_run_chained_in_graph(monkeypatc
         "truth_extracted",
         "critic_score",
         "merge_validated",
+        "treatment_ready",  # Concept Agent re-prompt event (new)
         "budget_updated",
         "shot_generated",
         "drift_scored",  # Phase 4: Continuity Agent scored every real clip
         "vo_ready",  # Phase 5: Voiceover + Caption Agent's parallel branch
         "master_cut_ready",  # Phase 5: Assembly Agent's fan-in join
+        "job_complete",  # Phase 6: Format Export node signals delivery
     }, event_names
     truth_event = next(e for e in custom_events if e["name"] == "truth_extracted")
     assert truth_event["data"]["count"] == len(GOOD_FACTS)

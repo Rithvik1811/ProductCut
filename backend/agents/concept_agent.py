@@ -31,7 +31,7 @@ from graph.state import ProductCutState, ProductTruth, ScriptVariant
 
 logger = logging.getLogger("productcut.agents.concept_agent")
 
-DEFAULT_TARGET_LENGTH_SEC = 18
+DEFAULT_TARGET_LENGTH_SEC = 30
 REQUIRED_VARIANT_COUNT = 4
 MIN_VARIANTS_AFTER_DEGRADE = 2
 MIN_GROUNDING_TRUTH_IDS = 2
@@ -152,6 +152,92 @@ def _format_truths(truths: list[ProductTruth]) -> str:
     return "\n".join(f"- [{t['truth_id']}] ({t['category']}) {t['fact']}" for t in truths)
 
 
+def _research_facts_block(facts: list) -> str:
+    """Build the WEB-SOURCED PRODUCT FACTS prompt block (v13+).
+
+    Returns "" when `facts` is empty so the facts-absent path is byte-identical
+    to the pre-v13 prompt (regression safety).
+
+    Fact categories and how each is presented:
+      spec / feature / differentiator / compatibility
+          → COPY FACTS — things to SAY about the product (VO material).
+      use_case / visual_moment
+          → VISUAL TIMELINE — scenes the finished video will show ON SCREEN;
+            the VO must write beats that LAND ON these moments (narrative
+            sync), never describe them.
+    Product appearance always comes from photo truths; research facts never
+    describe what the product looks like, only what it does and how it's used.
+    """
+    if not facts:
+        return ""
+
+    visual_categories = ("use_case", "visual_moment")
+    copy_facts = [f for f in facts if f.get("category") not in visual_categories]
+    visual_facts = [f for f in facts if f.get("category") in visual_categories]
+
+    def _fact_line(f: dict) -> str:
+        src = f.get("source_url", "")
+        host = re.sub(r"^https?://(www\.)?", "", src).split("/")[0] if src else "source"
+        return (
+            f"- [{f.get('fact_id', '?')}] ({f.get('category', '')}, "
+            f"{f.get('confidence', '')}) {f.get('claim', '')} (source: {host})"
+        )
+
+    lines = [
+        "WEB-SOURCED PRODUCT INTELLIGENCE (researched from public sources — NOT visible in photos):"
+    ]
+    if copy_facts:
+        lines.append("")
+        lines.append("COPY FACTS — what to SAY (spec / feature / differentiator / compatibility):")
+        lines.extend(_fact_line(f) for f in copy_facts)
+    if visual_facts:
+        lines.append("")
+        lines.append("VISUAL TIMELINE — what will be ON SCREEN (use_case / visual_moment):")
+        lines.append(
+            "These are the scenes and moments the finished VIDEO will show — the visual director\n"
+            "downstream stages them as real shots. Your job: write VO beats that LAND ON these\n"
+            "moments. The words play WHILE the moment is on screen, so the line must add the\n"
+            "MEANING of the moment (the result, the feeling, the \"so what\") — never a caption of it."
+        )
+        lines.extend(_fact_line(f) for f in visual_facts)
+    lines.append("")
+    lines.append("Rules for using these:")
+    lines.append(
+        "- COPY FACTS (spec/feature/differentiator/compatibility): the primary material for\n"
+        "  Beats 2-4 VO — they tell the viewer what changes in their life. Translate the fact into\n"
+        "  the viewer's lived experience; don't quote it verbatim. Cite every fact you use in\n"
+        "  grounding_research_ids."
+    )
+    lines.append(
+        "- VISUAL TIMELINE (use_case/visual_moment): assume the video WILL show these scenes.\n"
+        "  Write each affected beat as the line a narrator speaks AS that scene plays: name what\n"
+        "  the moment means for the viewer, not what the camera shows. The most emotionally vivid\n"
+        "  one anchors Beat 2 (Transformation); a second can anchor Beat 4 (Depth). Cite the fact\n"
+        "  in grounding_research_ids whenever a beat is written to land on it."
+    )
+    lines.append(
+        "  SYNC TEST for those beats: if your line describes what is visible on screen (\"a hiker\n"
+        "  fills the bottle at a stream\"), it FAILS — the camera already shows that. The line that\n"
+        "  lands is the meaning: \"Miles from anywhere, you've still got cold water.\""
+    )
+    lines.append(
+        "- NEVER state a spec, number, model name, or capability not in this list or photo truths."
+    )
+    lines.append(
+        '- Prefer "high" confidence facts for the hook and proof beats; "medium" facts for depth.'
+    )
+    lines.append(
+        "- HERO SPEC RULE: at most 1-2 numeric claims per variant, phrased as the outcome the\n"
+        '  viewer experiences ("Runs all weekend on one charge"), never spec-sheet strings.'
+    )
+    lines.append(
+        "- Photo truths win any conflict about what the product LOOKS like; research facts win\n"
+        "  any question about what the product DOES."
+    )
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def _brand_identity_block(brand_name: str, brand_context: str) -> str:
     if not brand_name and not brand_context:
         return ""
@@ -169,30 +255,50 @@ def _brand_identity_block(brand_name: str, brand_context: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _build_system_prompt(target_length_sec: int, human_use_suits: bool = False, brand_name: str = "", brand_context: str = "") -> str:
+def _build_system_prompt(target_length_sec: int, human_use_suits: bool = False, brand_name: str = "", brand_context: str = "", research_facts: Optional[list] = None) -> str:
     # human_use_suits is preserved as a parameter for future callers/analytics
     # (e.g. the Visual Direction Agent uses the same affordance signal), but no
     # longer changes the VO prompt itself -- the VO FOCUS MANDATE below applies
     # uniformly: humans belong to the VIDEO layer, not the VO layer.
     vo_focus_block = """VO FOCUS MANDATE (mandatory -- every line of every variant):
-The voiceover describes the PRODUCT: its features, materials, sensory qualities, and the benefit to the viewer.
-Every sentence must answer: "What does this product look like, feel like, or do?"
+Every VO sentence must answer: "So what? What does this change or enable FOR THE VIEWER?"
+Not "what is this product?" — the camera already shows that. The VO adds the MEANING.
+
+The test for every line: could this line describe ANY similar product in this category?
+If yes, it is too generic. Rewrite until it could only be said about THIS specific product.
 
 Hard rules:
 - The product OR the viewer ("you"/"your") must be the grammatical subject of every VO sentence.
-- NEVER make a third-person person ("she"/"he"/"they") the grammatical subject of a VO sentence that narrates their action.
-- Human presence is a VIDEO choice, not a VO choice. The video will show a person demonstrating the feature; the VO names WHAT the product does that makes it worth watching.
+- NEVER make a third-person person ("she"/"he"/"they") the grammatical subject of a VO action sentence.
+- Physical attributes (color, shape, material, component names) belong in SHOT DESCRIPTIONS, not spoken VO,
+  UNLESS describing a physical attribute IS the benefit (e.g. "it fits in your palm" for a compact product).
+  The difference: "gray fabric strap" is a description. "So light you forget you're wearing it" is a benefit.
+- Human presence is a VIDEO choice, not a VO choice. The video shows the person; the VO names the RESULT.
+- Research facts (spec, feature, differentiator, compatibility) are your richest source of VO material —
+  they describe what the product DOES. Translate them into the viewer's lived experience.
+- VISUAL SYNC (use_case / visual_moment research facts): these are the VISUAL TIMELINE — moments the
+  video WILL show on screen. Knowing what's on screen does NOT license describing it. When a beat lands
+  on one of these moments, the camera shows the scene; your line names what the moment MEANS for the
+  viewer — the result, the relief, the "now you can." Write the line so it could ONLY be spoken over
+  that exact moment, yet never mentions what is visible in it.
 
-WRONG (person as subject, action narrated): "She grabs it on the way out."
-RIGHT (product/viewer as subject): "Grab it on the way out. It's ready."
+WRONG (describes the product, not the benefit): "The gray strap holds the wide shell securely."
+RIGHT (names the viewer's experience): "Put it on. It doesn't go anywhere."
 
-WRONG: "She spent all morning filling it with ice. It worked great."
-RIGHT: "Fill it up. It stays cold all day."
+WRONG (names the component): "Four front-facing sensors track your hand position."
+RIGHT (names the result): "No controller needed. Reach out — it knows."
 
-WRONG: "She kept pressing that button to open it."
-RIGHT: "Press it once. It opens."
+WRONG (third-person action narration): "She grabs it on the way out."
+RIGHT (viewer-subject or imperative): "Grab it. You're already out the door."
 
-Write VO that makes the VIEWER imagine using the product -- second-person address ("you"/"your"/"grab"/"feel") is the correct lever, not a third-person backstory about someone else using it.
+WRONG: "It has a 2.5-hour battery life."
+RIGHT: "You get through a full session. No cable, no recharging mid-game."
+
+WRONG (captions the on-screen visual moment): "A hiker refills the bottle at a mountain stream."
+RIGHT (lands on that same moment): "Miles from the trailhead. Still ice-cold."
+
+Write VO that makes the VIEWER picture themselves using it — second-person address or imperative is the
+correct lever. The viewer is the protagonist; the product is what makes the scene possible.
 """
     return f"""You are a creative director writing short-form ad video scripts ({target_length_sec}
 seconds) for e-commerce product ads.
@@ -456,20 +562,64 @@ Per-variant requirements:
   sum to exactly {target_length_sec} seconds. Each beat's "line" is the actual
   script text spoken/shown during that beat.
 
-STORY STRUCTURE (beat-order rule, applies to every variant):
-Beat 1 -- the HOOK: ground the viewer in the product immediately. Three equally valid approaches:
-  (a) SECOND-PERSON INVITATION: drop the viewer into using the product ("Grab it. It's ready.")
-  (b) CURIOSITY GAP grounded in a real detail, resolved later ("Press it down. Hard as you can. It pops right back.")
-  (c) CONCRETE PRODUCT CLAIM: a specific fact stated in plain words ("It works. Every time.")
-      PLAIN-LANGUAGE WARNING for path (c): "concrete" means the OUTCOME the person EXPERIENCES,
-      stated plainly — not the engineering or manufacturing detail behind it. "It lasts all day."
-      is concrete. Any technical specification (material grades, construction processes, coatings,
-      compound names) is jargon. Path (c) is the most jargon-prone path — discipline is required
-      to keep it plain.
+NARRATIVE ARC — the beat sequence is MANDATORY for every variant:
 
-Beats 2-3 -- the PRODUCT PAYOFF: name 2-3 specific features that make this product distinct. Product is the subject.
+ONE BIG IDEA rule: before writing a single line, decide on the single most compelling thing
+about this product — the one reason a viewer would stop and want it. Every beat serves that idea.
+A script that tries to say six things says nothing. Find the one thing; build the arc around it.
 
-Final beat -- EARNED CTA: tie the ask to the specific thing just established (per CTA BRIDGE rule below).
+Beat 1 -- HOOK (4-5s): Stop the scroll. Open a desire, a curiosity gap, or a "what if."
+  The product may appear but is NOT explained yet. Three equally valid approaches:
+  (a) SECOND-PERSON DROP: put the viewer into a specific, vivid moment using the product
+      ("What if your commute sounded like this?" / "Grab it. You're already out the door.")
+  (b) CURIOSITY GAP: surface a surprising detail, then pay it off LATER in the script
+      ("Press it as hard as you can. It pops right back.")
+  (c) CONCRETE OUTCOME: state plainly what the product makes possible — the result, not the spec
+      ("It still works. Three years in, still works.")
+  HOOK RULE: the hook must be grounded in THIS product's real advantage — not a generic
+  pain point that could be swapped onto any competing product without changing a word.
+  PLAIN-LANGUAGE WARNING: concrete means the OUTCOME the person EXPERIENCES, never a
+  component name, material grade, or manufacturing detail.
+
+Beat 2 -- TRANSFORMATION (6-8s): The viewer's world WITH this product. This is the emotional core.
+  Describe the after-state — what life FEELS like now that they have it. This is not a
+  feature list; it is a scene from the viewer's near future. Use sensory, present-tense language.
+  Ask yourself: "What is the first thing a real person NOTICES when they use this?"
+  Then write that. Not the mechanism. The NOTICE.
+  If you have research facts (use_case, visual_moment, feature), the most emotionally vivid
+  one belongs here — translated into the viewer's lived experience, not quoted as a fact.
+
+Beat 3 -- PROOF (5-6s): The single hero capability that makes Beat 2 real. ONE fact, maximum.
+  Frame it as viewer action + result: "[Action]. [What happens]."
+  The viewer is the grammatical subject. The product's job is to make the result happen.
+  If you have research facts (spec, feature, differentiator), this is where the most impressive
+  one goes — phrased as what the viewer does and what they get, not as a spec-sheet entry.
+  The spoken line names the CONSEQUENCE, not the component or mechanism behind it.
+  WRONG: "The acoustic piezo sensor counts dust particles 15,000 times a second."
+  RIGHT: "It sees the dust you can't. And adjusts to catch every bit of it."
+
+Beat 4 -- DEPTH (5-6s): A contrasting angle — "and it does this too."
+  Introduce a DIFFERENT benefit from Beat 3. Not a rephrasing of the same fact; a genuinely
+  new thing. A second use case, a sensory intimacy, a social dimension, a versatility point.
+  The viewer should learn something they didn't know after Beat 3.
+
+Beat 5 -- PAYOFF + CTA (4-6s): Land the big idea, then invite. Never command.
+  (a) PAYOFF: echo the ONE big idea from your arc in its punchiest form (6 words or fewer).
+  (b) INVITATION: a verb of experience that is specific to what THIS product does.
+  The CTA must feel like a natural conclusion to what just happened — not a bolt-on command.
+
+CTA RULES (the deterministic backstop also enforces these):
+BANNED — never write these, for any product: "Get yours", "Buy now", "Order now",
+  "Order today", "Shop now", "Don't miss out", "Check it out", "Add to cart", "Grab yours."
+These are generic commands. A real CTA earns its close.
+
+FORMULA: [big-idea echo in one phrase] + [experience verb specific to THIS product].
+  The experience verb is the action a viewer takes WITH the product — not "buy" or "get."
+  Think: what do you DO with this product? That verb is your CTA.
+  A candle: "Light yours." A VR headset: "Step inside." Running shoes: "Go further."
+  If no single verb fits perfectly, use: "That's what [Brand] is for." (if brand known).
+  The test: could this exact CTA appear on any other ad with just a brand-name swap?
+  If yes, it is too generic. Rewrite until it could ONLY belong to this product's ad.
 
 POSITIVE-ONLY GROUNDING (mandatory): never cite a material_character-category
 truth (a scratch, scuff, wear mark) in ANY variant -- flaws are off by default.
@@ -512,7 +662,7 @@ This replaces any third-person pronoun story: the viewer is the protagonist, not
 If seller_direction includes "never_do" constraints, do not violate them in
 any variant. If mood words are present, let them bias framework/tone choice.
 
-{_brand_identity_block(brand_name, brand_context)}Return ONLY valid JSON in this exact shape, no preamble or commentary:
+{_research_facts_block(research_facts or [])}{_brand_identity_block(brand_name, brand_context)}Return ONLY valid JSON in this exact shape, no preamble or commentary:
 
 {{
   "script_variants": [
@@ -1061,6 +1211,7 @@ def _validate_variant(
     target_length_sec: int,
     truth_facts: Optional[dict[str, str]] = None,
     wants_imperfection: bool = False,
+    research_ids: Optional[set] = None,
 ) -> list[str]:
     """Return a list of violation strings (empty = structurally valid).
 
@@ -1092,6 +1243,19 @@ def _validate_variant(
     unknown = [t for t in gti if t not in truth_categories]
     if unknown:
         problems.append(f"grounding_truth_ids references unknown truth_id(s): {unknown}")
+
+    # v13: cited research fact IDs (r-prefixed) must correspond to a real
+    # web-sourced fact -- mirrors the unknown truth-id check above. Only checks
+    # when research_ids is provided; a variant citing no research is fine.
+    _research_ids = research_ids or set()
+    gri = variant.get("grounding_research_ids") or []
+    unknown_research = [
+        r for r in gri if str(r).startswith("r") and r not in _research_ids
+    ]
+    if unknown_research:
+        problems.append(
+            f"grounding_research_ids references unknown research fact id(s): {unknown_research}"
+        )
     else:
         imperfection_problem = _imperfection_citation_problem(gti, truth_categories, wants_imperfection)
         if imperfection_problem:
@@ -1104,7 +1268,7 @@ def _validate_variant(
         effective_specific_categories = (
             SPECIFIC_CATEGORIES | {IMPERFECTION_CATEGORY} if wants_imperfection else SPECIFIC_CATEGORIES
         )
-        if not any(truth_categories[t] in effective_specific_categories for t in gti):
+        if not any(truth_categories[t] in effective_specific_categories for t in gti if t in truth_categories):
             problems.append(
                 f"grounding_truth_ids {gti} are all generic categories "
                 f"(none is {SPECIFIC_CATEGORIES}) -- cite at least one idiosyncratic detail"
@@ -1113,7 +1277,7 @@ def _validate_variant(
         # multiple categories -- but only when the extracted truths themselves
         # do; a degenerate all-one-category truth list degrades gracefully
         # rather than making every variant structurally unvalidatable.
-        cited_categories = {truth_categories[t] for t in gti}
+        cited_categories = {truth_categories[t] for t in gti if t in truth_categories}
         available_categories = set(truth_categories.values())
         if (
             gti
@@ -1193,6 +1357,7 @@ def _split_valid_invalid(
     target_length_sec: int,
     truth_facts: Optional[dict[str, str]] = None,
     wants_imperfection: bool = False,
+    research_ids: Optional[set] = None,
 ) -> tuple[list[ScriptVariant], list[tuple[dict, list[str]]]]:
     """Per-variant structural check, THEN cross-variant dedup, in one pass.
 
@@ -1207,7 +1372,8 @@ def _split_valid_invalid(
 
     for v in variants:
         problems = _validate_variant(
-            v, truth_categories, target_length_sec, truth_facts, wants_imperfection
+            v, truth_categories, target_length_sec, truth_facts, wants_imperfection,
+            research_ids,
         )
         if problems:
             invalid.append((v, problems))
@@ -1234,6 +1400,7 @@ def _split_valid_invalid(
                 hook_type=v["hook_type"],
                 emotional_trigger=v["emotional_trigger"],
                 grounding_truth_ids=v["grounding_truth_ids"],
+                grounding_research_ids=v.get("grounding_research_ids", []),
                 beats=v["beats"],
                 target_length_sec=target_length_sec,
             )
@@ -1255,6 +1422,7 @@ def _human_presence_count(variants: list) -> int:
 def _reprompt_message(
     invalid: list[tuple[dict, list[str]]],
     valid_count: int,
+    missing_frameworks: list[str] | None = None,
 ) -> str:
     parts: list[str] = []
     if invalid:
@@ -1272,10 +1440,23 @@ def _reprompt_message(
             f"{REQUIRED_VARIANT_COUNT} are required, still distinct in "
             "framework/hook_type/emotional_trigger."
         )
-    parts.append(
-        "Fix ONLY these specific issues and return the full corrected JSON "
-        "object in the same shape, still with exactly 4 variants."
-    )
+
+    if missing_frameworks:
+        fw_list = ", ".join(missing_frameworks)
+        parts.append(
+            f"Return ONLY the {len(missing_frameworks)} missing variant(s) using "
+            f"{'this framework' if len(missing_frameworks) == 1 else 'these frameworks'}: "
+            f"{fw_list}. "
+            "Wrap your response in the same JSON envelope: "
+            '{\"script_variants\": [<just the missing variant(s)>]}. '
+            "Do NOT re-emit the variants that already passed — include only the "
+            f"{len(missing_frameworks)} new one(s)."
+        )
+    else:
+        parts.append(
+            "Fix ONLY these specific issues and return the full corrected JSON "
+            "object in the same shape, still with exactly 4 variants."
+        )
     return "\n\n".join(parts)
 
 
@@ -1287,6 +1468,7 @@ async def generate_script_variants(
     client: Optional[AsyncOpenAI] = None,
     brand_name: str = "",
     brand_context: str = "",
+    research_facts: Optional[list] = None,
 ) -> list[ScriptVariant]:
     """Run the Concept Agent: one Qwen-Max call, one bounded re-prompt on failure.
 
@@ -1320,10 +1502,13 @@ async def generate_script_variants(
     wants_imperfection = _wants_imperfection_angle(
         brief, (seller_direction or {}).get("freeform")
     )
+    research_ids = {
+        f.get("fact_id") for f in (research_facts or []) if f.get("fact_id")
+    }
 
     try:
         messages = [
-            {"role": "system", "content": _build_system_prompt(target_length_sec, human_bias, brand_name, brand_context)},
+            {"role": "system", "content": _build_system_prompt(target_length_sec, human_bias, brand_name, brand_context, research_facts)},
             {"role": "user", "content": _build_user_content(brief, product_truths, seller_direction, brand_name, brand_context)},
         ]
 
@@ -1331,29 +1516,38 @@ async def generate_script_variants(
         parsed = _parse_json_response(response_text)
         raw_variants = parsed.get("script_variants", [])
         valid, invalid = _split_valid_invalid(
-            raw_variants, truth_categories, target_length_sec, truth_facts, wants_imperfection
+            raw_variants, truth_categories, target_length_sec, truth_facts, wants_imperfection,
+            research_ids,
         )
 
         # Per spec: fewer than 4 variants is its own re-prompt trigger, even
         # when nothing else was individually wrong (the model just under-delivered).
         if len(valid) < REQUIRED_VARIANT_COUNT:
+            valid_frameworks = {v.get("framework") for v in valid}
+            missing_frameworks = [f for f in FRAMEWORKS if f not in valid_frameworks]
             logger.info(
-                "Concept Agent: %d/%d variants valid, re-prompting once (%d problems)",
-                len(valid), REQUIRED_VARIANT_COUNT, len(invalid),
+                "Concept Agent: %d/%d variants valid, targeted re-prompt for missing frameworks: %s (%d problems)",
+                len(valid), REQUIRED_VARIANT_COUNT, missing_frameworks, len(invalid),
             )
             messages.append({"role": "assistant", "content": response_text})
             messages.append({
                 "role": "user",
-                "content": _reprompt_message(invalid, len(valid)),
+                "content": _reprompt_message(invalid, len(valid), missing_frameworks),
             })
             retry_text = await create_completion(client, model=model, messages=messages, enable_thinking=True)
             retry_parsed = _parse_json_response(retry_text)
             retry_valid, _ = _split_valid_invalid(
                 retry_parsed.get("script_variants", []),
                 truth_categories, target_length_sec, truth_facts, wants_imperfection,
+                research_ids,
             )
-            if len(retry_valid) > len(valid):
-                valid = retry_valid
+            # Merge: keep the already-valid variants, slot in new ones only for
+            # the missing frameworks so we never discard good work.
+            retry_by_framework = {v.get("framework"): v for v in retry_valid}
+            for fw in missing_frameworks:
+                if fw in retry_by_framework:
+                    valid.append(retry_by_framework[fw])
+                    logger.info("Concept Agent: recovered missing framework '%s' from targeted re-prompt", fw)
 
         if len(valid) < MIN_VARIANTS_AFTER_DEGRADE:
             logger.warning(
@@ -1378,12 +1572,15 @@ async def concept_agent_node(state: ProductCutState) -> dict:
     `critic_score` event covers the whole Concept+Critic+Meta-Critic chain's
     result (RR's task), not a separate event per node.
     """
+    _research = state.get("product_research") or {}
+    research_facts = _research.get("facts", []) if _research.get("performed") else []
     variants = await generate_script_variants(
         brief=state["brief"],
         product_truths=state.get("product_truths", []),
         seller_direction=state.get("seller_direction"),
         brand_name=state.get("brand_name", ""),
         brand_context=state.get("brand_context", ""),
+        research_facts=research_facts,
     )
     trace_note = f"\n[concept_agent] produced {len(variants)} script variant(s)."
     if len(variants) == 1:
