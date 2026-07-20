@@ -544,8 +544,20 @@ def _treatment_menu(treatment: Treatment) -> str:
     )
 
 
-def _build_call_a_system_prompt() -> str:
-    return f"""You are a shot-list producer breaking a finished ad script into {MIN_SHOTS}-{MAX_SHOTS} shots.
+def _target_shot_count(target_duration_sec: float) -> int:
+    """How many shots to target for an ad of `target_duration_sec` seconds.
+
+    Sizes the shot count to the duration at ~one shot per MAX_SHOT_DURATION_SEC
+    (a 15s ad -> 3 shots, a 30s ad -> 6 shots), clamped into the hard
+    [MIN_SHOTS, MAX_SHOTS] range. This only GUIDES the count -- the model still
+    uses its judgment for beat assignment.
+    """
+    return max(MIN_SHOTS, min(MAX_SHOTS, round(target_duration_sec / MAX_SHOT_DURATION_SEC)))
+
+
+def _build_call_a_system_prompt(target_duration_sec: float = DEFAULT_TARGET_LENGTH_SEC) -> str:
+    target_shots = _target_shot_count(target_duration_sec)
+    return f"""You are a shot-list producer breaking a finished ad script into exactly {target_shots} shots for this {target_duration_sec:.0f}s ad.
 
 In THIS step you only justify each shot -- you decide nothing about camera,
 composition, or wording yet. For every shot output exactly these five fields:
@@ -589,7 +601,9 @@ def _build_call_a_user_content(
     winning_script: WinningScript,
     product_truths: list[ProductTruth],
     treatment: Treatment,
+    target_duration_sec: float = DEFAULT_TARGET_LENGTH_SEC,
 ) -> str:
+    target_shots = _target_shot_count(target_duration_sec)
     return (
         "Numbered script lines (quote one of these verbatim per shot):\n"
         f"{_beat_menu(winning_script)}\n\n"
@@ -597,7 +611,7 @@ def _build_call_a_user_content(
         f"{_truth_menu(product_truths)}\n\n"
         "Treatment beats (beat_index -> visual_approach):\n"
         f"{_treatment_menu(treatment)}\n\n"
-        f"Produce {MIN_SHOTS}-{MAX_SHOTS} shots as JSON."
+        f"Produce exactly {target_shots} shots for this {target_duration_sec:.0f}s ad, as JSON."
     )
 
 
@@ -861,6 +875,13 @@ For every shot produce these fields:
   rotates to reveal a new face, the texture catches the light differently as
   the angle shifts, a previously-hidden detail comes into frame. Motion in the
   SCENE beats motion of the CAMERA every time.
+- scene_environment: a SHORT (8-20 word) STATIC description of the shot's
+  physical setting/environment ONLY -- where the product sits, the surface it
+  rests on, the surrounding space, the time-of-day light quality. NO motion,
+  NO camera language, NO action verbs. This is used to generate a still scene
+  the shot's motion then animates. E.g. "on a white kitchen counter beside
+  fresh strawberries, soft morning window light" or "on a wooden picnic table
+  at a misty mountain trailhead."
 - negative_prompt_extra: OPTIONAL short extra risk terms for THIS shot only (a
   shared identity-first negative prompt is already applied; only add per-shot
   risk). Leave "" if none.
@@ -955,6 +976,7 @@ Return ONLY valid JSON in this exact shape, no preamble or commentary:
       "duration_sec": 4,
       "voiceover_line": "the spoken line",
       "description": "80-120 word prompt ...",
+      "scene_environment": "short static setting description, no motion",
       "negative_prompt_extra": ""
     }}
   ]
@@ -1131,6 +1153,7 @@ def _assemble_shots(
                 "lighting": shared_lighting,
                 "negative_prompt": negative_prompt,
                 "reference_image_id": _reference_image_id(j["truth_fact_id"], truths_by_id),
+                "scene_environment": (b.get("scene_environment") or "").strip(),
                 "text_overlay_zone": _coerce_enum(b.get("text_overlay_zone"), _TEXT_ZONES, "none"),
                 "duration_sec": duration,
                 # PLACEHOLDER, NOT a real allocation. The grounding-weighted budget
@@ -1190,8 +1213,8 @@ async def generate_shot_list(
     try:
         # --- Call A: Justify -------------------------------------------------
         messages = [
-            {"role": "system", "content": _build_call_a_system_prompt()},
-            {"role": "user", "content": _build_call_a_user_content(winning_script, product_truths, treatment)},
+            {"role": "system", "content": _build_call_a_system_prompt(target_duration_sec)},
+            {"role": "user", "content": _build_call_a_user_content(winning_script, product_truths, treatment, target_duration_sec)},
         ]
         raw_a = await create_completion(client, model=model, messages=messages, temperature=CALL_A_TEMPERATURE)
         justifications = _parse_json_response(raw_a).get("shots", [])[:MAX_SHOTS]

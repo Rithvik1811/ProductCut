@@ -1588,10 +1588,13 @@ async def concept_agent_node(state: ProductCutState) -> dict:
     """
     _research = state.get("product_research") or {}
     research_facts = _research.get("facts", []) if _research.get("performed") else []
+    sd = state.get("seller_direction") or {}
+    target_length_sec = int(sd.get("target_length_sec") or DEFAULT_TARGET_LENGTH_SEC)
     variants = await generate_script_variants(
         brief=state["brief"],
         product_truths=state.get("product_truths", []),
         seller_direction=state.get("seller_direction"),
+        target_length_sec=target_length_sec,
         brand_name=state.get("brand_name", ""),
         brand_context=state.get("brand_context", ""),
         research_facts=research_facts,

@@ -416,8 +416,15 @@ async def test_node_real_zero_cap_is_honored_not_treated_as_unset():
     assert "OVER CAP" in out["reasoning_trace"]          # 0.0 cap -> floor/over-cap
 
 
+# When cap is unset (missing key / None / empty ledger dict) the node no longer
+# falls back to the flat DEFAULT_JOB_BUDGET_CAP; it DERIVES the cap from the
+# actual planned shots (all shots at 1080p + 20% retry buffer). These tests still
+# exercise the "cap is None" guard path -- only the resolved value changed.
+_DYNAMIC_CAP_3x4 = round(3 * 4.0 * RATE_1080P * 1.20, 4)   # 3 shots × 4.0s × 0.12 × 1.20 = 1.728
+
+
 @pytest.mark.asyncio
-async def test_node_cap_key_missing_from_present_ledger_falls_back_to_default():
+async def test_node_cap_key_missing_from_present_ledger_sizes_to_shots():
     shots = [
         _shot("a", "hook", "hook_hero", 4.0),
         _shot("b", "cta", "cta_endcard", 4.0),
@@ -429,11 +436,11 @@ async def test_node_cap_key_missing_from_present_ledger_falls_back_to_default():
         "budget_ledger": {"spent": 0.0, "per_shot": {}},   # ledger present, NO cap key
     }
     out = await RunnableLambda(budget_gate_node).ainvoke(state)
-    assert out["budget_ledger"]["cap"] == DEFAULT_JOB_BUDGET_CAP
+    assert out["budget_ledger"]["cap"] == pytest.approx(_DYNAMIC_CAP_3x4)
 
 
 @pytest.mark.asyncio
-async def test_node_cap_none_in_ledger_falls_back_to_default():
+async def test_node_cap_none_in_ledger_sizes_to_shots():
     shots = [
         _shot("a", "hook", "hook_hero", 4.0),
         _shot("b", "cta", "cta_endcard", 4.0),
@@ -445,11 +452,11 @@ async def test_node_cap_none_in_ledger_falls_back_to_default():
         "budget_ledger": {"cap": None, "spent": 0.0, "per_shot": {}},
     }
     out = await RunnableLambda(budget_gate_node).ainvoke(state)
-    assert out["budget_ledger"]["cap"] == DEFAULT_JOB_BUDGET_CAP
+    assert out["budget_ledger"]["cap"] == pytest.approx(_DYNAMIC_CAP_3x4)
 
 
 @pytest.mark.asyncio
-async def test_node_empty_budget_ledger_dict_falls_back_to_default():
+async def test_node_empty_budget_ledger_dict_sizes_to_shots():
     shots = [
         _shot("a", "hook", "hook_hero", 4.0),
         _shot("b", "cta", "cta_endcard", 4.0),
@@ -458,10 +465,10 @@ async def test_node_empty_budget_ledger_dict_falls_back_to_default():
     state = {
         "shot_list": shots,
         "product_truths": TRUTHS,
-        "budget_ledger": {},   # falsy -> `... or {}` path, cap None -> default
+        "budget_ledger": {},   # falsy -> `... or {}` path, cap None -> dynamic sizing
     }
     out = await RunnableLambda(budget_gate_node).ainvoke(state)
-    assert out["budget_ledger"]["cap"] == DEFAULT_JOB_BUDGET_CAP
+    assert out["budget_ledger"]["cap"] == pytest.approx(_DYNAMIC_CAP_3x4)
 
 
 # ===========================================================================
