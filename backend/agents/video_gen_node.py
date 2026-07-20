@@ -425,6 +425,17 @@ _PRODUCT_MOTION_URGENCY_CLAUSE = (
 # "flag, don't hardcode forever" pattern (budget_gate.py's DEFAULT_JOB_BUDGET_CAP).
 DEFAULT_PROMPT_EXTEND = os.getenv("VIDEO_GEN_PROMPT_EXTEND", "false").lower() in ("1", "true")
 
+# How many times to retry a shot that fails with a hard infra error (timeout or
+# api_error) before falling back to Ken-Burns. Budget-exceeded failures are NOT
+# retried (they're deterministic -- the allocated budget simply can't cover the
+# shot and a retry would fail the same way). Env-overridable per the codebase's
+# flag-not-hardcode pattern.
+MAX_INFRA_RETRIES = int(os.getenv("VIDEO_GEN_MAX_INFRA_RETRIES", "3"))
+# Undeclared extra key on Shot dict (same "costs nothing" posture as
+# IDENTITY_HARD_FAIL_STREAK_KEY in continuity_gate.py -- Shot is never
+# re-validated after shot_list_agent.py's assembly step).
+INFRA_RETRY_COUNT_KEY = "infra_retry_count"
+
 # shot_type values naming the human-interaction composition (C3 v2 addition of
 # "product_in_hand", C3 v4 addition of "worn_in_use" -- the wider, person-in-
 # motion composition). Hand-kept in sync with agents/shot_list_agent.py's own
@@ -1191,9 +1202,30 @@ async def generate_videos(
             if shot_id in generated:
                 updated.append({**shot, "status": SUCCESS_STATUS})
             elif shot_id in failures_by_id:
-                updated.append(
-                    {**shot, "status": FALLBACK_REQUESTED_STATUS, "failure_reason": failures_by_id[shot_id]}
-                )
+                reason = failures_by_id[shot_id]
+                retryable = reason.get("type") in (FAILURE_TYPE_TIMEOUT, FAILURE_TYPE_API_ERROR)
+                infra_count = shot.get(INFRA_RETRY_COUNT_KEY, 0)
+                if retryable and infra_count < MAX_INFRA_RETRIES:
+                    logger.warning(
+                        "Video-Gen Node: shot %s infra failure (%s), retry %d/%d "
+                        "-> pending (Ken-Burns disabled for infra failures).",
+                        shot_id, reason.get("type"), infra_count + 1, MAX_INFRA_RETRIES,
+                    )
+                    updated.append({
+                        **shot,
+                        "status": PENDING_STATUS,
+                        INFRA_RETRY_COUNT_KEY: infra_count + 1,
+                        "failure_reason": reason,
+                    })
+                else:
+                    # budget_exceeded is deterministic (never retried); infra
+                    # failures only reach here once MAX_INFRA_RETRIES is exhausted.
+                    logger.warning(
+                        "Video-Gen Node: shot %s %s -> handing off to Ken-Burns "
+                        "(budget_exceeded or infra retries exhausted at %d/%d).",
+                        shot_id, reason.get("type"), infra_count, MAX_INFRA_RETRIES,
+                    )
+                    updated.append({**shot, "status": FALLBACK_REQUESTED_STATUS, "failure_reason": reason})
             else:
                 updated.append(shot)  # defensive: shouldn't happen, every shot dispatches exactly one branch
         return {"shots": updated}
