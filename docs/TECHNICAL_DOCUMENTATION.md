@@ -1,8 +1,8 @@
-# ProductCut — Technical Documentation
+# Merchant Marquee — Technical Documentation
 
 ### Global AI Hackathon with Qwen Cloud — Track 2: AI Showrunner
 
-> **Document status.** This is the authoritative technical specification for ProductCut. It supersedes Section 3 (System Architecture) and Section 4 (Agent Roster) of `PROJECT_PROPOSAL.md`. Where the proposal and this document disagree, this document wins. The problem statement and motivation framing carried forward from the proposal remain valid. **This revision** adds two architectural extensions arising from a second research pass: (1) **script-driven, not category-driven, direction** — a Product Truth Extractor, a Treatment Agent, a justification-forced Shot-List schema, and a lightweight seller creative-intake, all aimed at killing "mode collapse" toward generic same-feeling output; and (2) **post-generation chat-based revision** — an Edit Router, Edit Interpreter, and checkpoint-based scoped re-execution that let a seller request a targeted fix ("make the hook punchier," "shot 2 is too dark") without re-running the whole pipeline. Both extensions are additive to the existing DAG; no prior node is removed.
+> **Document status.** This is the authoritative technical specification for Merchant Marquee. It supersedes Section 3 (System Architecture) and Section 4 (Agent Roster) of `PROJECT_PROPOSAL.md`. Where the proposal and this document disagree, this document wins. The problem statement and motivation framing carried forward from the proposal remain valid. **This revision** adds two architectural extensions arising from a second research pass: (1) **script-driven, not category-driven, direction** — a Product Truth Extractor, a Treatment Agent, a justification-forced Shot-List schema, and a lightweight seller creative-intake, all aimed at killing "mode collapse" toward generic same-feeling output; and (2) **post-generation chat-based revision** — an Edit Router, Edit Interpreter, and checkpoint-based scoped re-execution that let a seller request a targeted fix ("make the hook punchier," "shot 2 is too dark") without re-running the whole pipeline. Both extensions are additive to the existing DAG; no prior node is removed.
 
 ---
 
@@ -27,15 +27,15 @@
 
 Small Etsy and Shopify sellers cannot afford professional product video ads. A single 15–30 second ad video from a freelance studio costs $300–$1,500 and takes days to turn around. Most sellers default to posting static photos instead, which convert worse than video across every major ad platform. The gap between "has product photos" and "has a scroll-stopping short-form video ad" is exactly the gap that keeps small sellers from competing for paid attention.
 
-**ProductCut** closes that gap. A seller uploads 2–3 product photos and a one-line creative brief — for example, *"handmade ceramic mugs, cozy autumn vibe"* — and receives a finished 15–30 second product ad video, generated end-to-end by a coordinated crew of LLM agents running on Qwen Cloud.
+**Merchant Marquee** closes that gap. A seller uploads 2–3 product photos and a one-line creative brief — for example, *"handmade ceramic mugs, cozy autumn vibe"* — and receives a finished 15–30 second product ad video, generated end-to-end by a coordinated crew of LLM agents running on Qwen Cloud.
 
 This is deliberately **not** a general-purpose "type an idea, get any video" tool. The scope is intentionally narrow: **short-form product ad video for e-commerce sellers**. Narrow scope is what makes the agent pipeline's decisions — script selection, shot budgeting, visual consistency — meaningfully checkable, defensible, and demoable within a hackathon timeframe. A narrow domain also lets each agent encode real domain expertise (ad copywriting frameworks, camera grammar, pacing rules) instead of generic prompting.
 
 ### 1.2 Fit with Track 2 — AI Showrunner
 
-Track 2 asks for an autonomous system that handles the full creative production chain — scriptwriting, storyboarding, video generation, and editing — while demonstrating narrative ability, multimodal orchestration, and quality maximization under a constrained budget. ProductCut maps directly onto every one of those requirements:
+Track 2 asks for an autonomous system that handles the full creative production chain — scriptwriting, storyboarding, video generation, and editing — while demonstrating narrative ability, multimodal orchestration, and quality maximization under a constrained budget. Merchant Marquee maps directly onto every one of those requirements:
 
-| Track 2 requirement | How ProductCut addresses it |
+| Track 2 requirement | How Merchant Marquee addresses it |
 |---|---|
 | Autonomously handle scriptwriting → storyboarding → video generation → editing | Product Truth Extractor → Concept Agent → Critic Chain → Treatment Agent → Shot-List Agent → Video-Gen → Continuity → Assembly → Format Export, orchestrated as a single LangGraph graph |
 | Demonstrate narrative ability | The Concept Agent produces four structurally distinct scripts, each using a different copywriting framework, hook type, and emotional trigger; the Critic Chain scores and cross-pollinates them into one winning narrative |
@@ -45,7 +45,7 @@ Track 2 asks for an autonomous system that handles the full creative production 
 
 ### 1.3 What the System Produces
 
-For each job, ProductCut outputs a finished short-form product ad in **three aspect ratios** — 9:16 (TikTok / Reels / Shorts), 1:1 (feed), and 16:9 (YouTube) — plus a full transparency breakdown: the four candidate scripts, every critic score, the merge justification and its independent coherence/pacing re-check, the director's treatment, the per-shot justification trace, the per-shot budget ledger, and the continuity drift scores. The transparency breakdown is a first-class deliverable, not a debug artifact: it is what makes the system's autonomous creative decisions legible to a judge (and, in production, to a seller who wants to understand why the system made the choices it made).
+For each job, Merchant Marquee outputs a finished short-form product ad in **three aspect ratios** — 9:16 (TikTok / Reels / Shorts), 1:1 (feed), and 16:9 (YouTube) — plus a full transparency breakdown: the four candidate scripts, every critic score, the merge justification and its independent coherence/pacing re-check, the director's treatment, the per-shot justification trace, the per-shot budget ledger, and the continuity drift scores. The transparency breakdown is a first-class deliverable, not a debug artifact: it is what makes the system's autonomous creative decisions legible to a judge (and, in production, to a seller who wants to understand why the system made the choices it made).
 
 ### 1.4 Two Extensions: Script-Driven Direction and Chat-Based Revision
 
@@ -60,7 +60,7 @@ A prior research pass identified a failure mode called **"the Price of Format"**
 
 ### 2.1 The Pipeline Is a Budget-Capped DAG, Not a Conversation
 
-The core architectural decision is the choice of orchestration framework. ProductCut's pipeline is **not** a free-form multi-agent conversation. It is a directed acyclic graph (DAG) with five specific structural properties that the framework must model natively:
+The core architectural decision is the choice of orchestration framework. Merchant Marquee's pipeline is **not** a free-form multi-agent conversation. It is a directed acyclic graph (DAG) with five specific structural properties that the framework must model natively:
 
 1. **A conditional retry loop.** The Continuity Agent can send a shot back to the Video-Gen Node for re-generation, but only up to a hard cap of 2 retries, after which it escalates to human review.
 2. **A scoring / merge step with a visible reasoning trace, plus an independent re-check of the merge's own output.** The Critic Chain must produce an auditable record of how four candidate scripts were scored and merged into one, and the merge itself must be re-validated by a node other than the one that built it (Section 5.4.7) before it is accepted — this trace is a demo deliverable, not an implementation detail.
@@ -98,7 +98,7 @@ Critically, **all model calls route through Qwen via DashScope's OpenAI-compatib
 
 A prior research round on this project established that giving the Shot-List Agent a fixed per-product-category lookup table of camera moves ("mugs → macro + orbit; apparel → lifestyle wide") produces *"generic output with nouns swapped"* — the template itself is a behavioral anchor that collapses the model's entropy regardless of what the specific script says. Real commercial directors do not work this way: they write a **director's treatment**, a short document that argues, with reference to the *specific* script, why a specific visual approach fits *this* ad — reference imagery, color story, pacing philosophy, camera/lens choices, and an explicit rationale connecting each choice to the script's narrative beats, not to the product's category.
 
-ProductCut encodes this as two new agents plus one schema change:
+Merchant Marquee encodes this as two new agents plus one schema change:
 
 - **Product Truth Extractor** (Section 5.2) runs immediately after Ingest, before a single word of script is written. It is a Qwen-VL call that pulls specific, checkable facts from the actual uploaded photos — exact colors, materials, textures, distinguishing details, imperfections — into a `product_truths[]` list. Every fact carries a `truth_id`. This is the raw material that keeps everything downstream specific rather than generic.
 - **Treatment Agent** (Section 5.5) runs after the Critic Chain has produced the winning script. It writes a ~250–400 word director's treatment: a persona (e.g. "kinetic, high-contrast, fast-cut director" vs. "quiet, tactile, slow-reveal director"), a color story, a pacing philosophy, and — critically — a one-sentence justification **per script beat**, each justification required to quote the script and cite a `truth_id`.
@@ -108,7 +108,7 @@ A fourth, lighter-weight addition lets the **seller** inject their own specific 
 
 ### 2.5 Post-Generation Revision — Scoped Regeneration, Not a Restart
 
-Commercial tools that already ship "chat to edit" on generated media (e.g. Adobe Firefly's "Prompt to Edit," powered by Runway's Aleph model) apply a natural-language instruction as a **targeted patch to an existing clip** — analyzing the existing footage for context and editing in place — rather than regenerating from a blank slate. ProductCut adopts the same philosophy at the pipeline level, not just the single-clip level: a chat message is classified to the **minimal set of graph nodes that must re-run**, and LangGraph's checkpointer forks execution from that node with patched state, leaving every untouched upstream and sibling artifact byte-identical.
+Commercial tools that already ship "chat to edit" on generated media (e.g. Adobe Firefly's "Prompt to Edit," powered by Runway's Aleph model) apply a natural-language instruction as a **targeted patch to an existing clip** — analyzing the existing footage for context and editing in place — rather than regenerating from a blank slate. Merchant Marquee adopts the same philosophy at the pipeline level, not just the single-clip level: a chat message is classified to the **minimal set of graph nodes that must re-run**, and LangGraph's checkpointer forks execution from that node with patched state, leaving every untouched upstream and sibling artifact byte-identical.
 
 Three new components (Section 5.16) implement this:
 
@@ -716,7 +716,7 @@ version_history[]: { branch_id, parent_branch_id, created_at, summary }
 
 ## 7. Database Design
 
-ProductCut persists **structured relational state** in a managed Postgres-compatible database and **binary assets** in OSS. The split is deliberate: the job → shots → assets relationships are genuinely relational with clear foreign keys, so they belong in a relational DB; photos and video files are large opaque blobs that belong in object storage, never in the DB.
+Merchant Marquee persists **structured relational state** in a managed Postgres-compatible database and **binary assets** in OSS. The split is deliberate: the job → shots → assets relationships are genuinely relational with clear foreign keys, so they belong in a relational DB; photos and video files are large opaque blobs that belong in object storage, never in the DB.
 
 ### 7.1 Recommended Engine
 
@@ -744,7 +744,7 @@ The foreign-key chain `jobs.job_id → shot_lists → generated_assets` (and `�
 
 ## 8. Error Handling & Graceful Degradation
 
-ProductCut treats robustness as a demo feature, not an afterthought: every failure mode has a **bounded, defined** outcome, and none of them can hang the pipeline in an unbounded loop.
+Merchant Marquee treats robustness as a demo feature, not an afterthought: every failure mode has a **bounded, defined** outcome, and none of them can hang the pipeline in an unbounded loop.
 
 - **Video-gen hard failure (API error / timeout).** Routes **immediately to the Ken-Burns fallback**, and **does not consume a Continuity retry.** Infrastructure failures and quality failures are handled by different mechanisms, so an outage doesn't burn the quality-retry budget.
 - **Continuity drift.** Capped at **2 retries** back to Video-Gen. On exhaustion, escalates to a **human-review `interrupt()`** — a **real pause/resume via LangGraph's checkpointer**, not a dead-end flag. The seller resolves it (approve / edit-and-retry / accept fallback) and the graph resumes from the checkpoint.
@@ -761,44 +761,64 @@ The throughline: every loop in the system (retry, budget, review, justification,
 
 ## 9. Deployment on Alibaba Cloud
 
-The entire backend runs on Alibaba Cloud, satisfying the hackathon's **Proof of Deployment** requirement. This section documents where each component runs and why.
+The entire system runs on Alibaba Cloud ECS, containerized with Docker Compose and continuously deployed via GitHub Actions on every push to `master`.
 
-### 9.1 Backend Compute — ECS (recommended) vs. Function Compute
+### 9.1 Backend Compute — ECS + Docker
 
-The FastAPI + LangGraph application is deployed on **Alibaba Cloud ECS as the default choice.** The tradeoff:
+The FastAPI + LangGraph application runs on **Alibaba Cloud ECS** (Ubuntu 22.04, root, `~/merchant-marquee`) behind Docker Compose. ECS is the right fit because Merchant Marquee relies on **long-lived WebSocket connections** (streaming throughout multi-minute pipeline runs) and **LangGraph checkpointing state** via Postgres between requests — both of which conflict with serverless FaaS timeout and cold-start constraints.
 
-- **ECS (recommended for this project).** A **persistent process** is the right fit because ProductCut relies on **long-lived WebSocket connections** (streaming the budget ledger, critic trace, and drift scores throughout a multi-minute run) and on **LangGraph checkpointing state** in memory / on disk between requests. A pipeline run takes minutes and streams continuously; a persistent server handles that naturally. The chat-revision subsystem's checkpoint forking (Section 5.16.4) has the same requirement — forking a branch is a stateful Postgres read/write followed by re-entering the graph, which is far more natural on a persistent process than on a cold FaaS invocation.
-- **Function Compute (serverless).** Cheaper at idle, but **WebSocket and long-running graph execution are awkward on FaaS** — function timeouts and the stateless execution model fight both the multi-minute pipeline and the persistent stream. Function Compute is appropriate only for **stateless helper endpoints** (e.g., a thumbnail generator or a webhook receiver), not the orchestrator itself.
+**Container topology:**
 
-**Recommendation: ECS for the orchestrator**, specifically because of the long-lived WebSocket streaming, the multi-minute checkpointed pipeline execution, and now the stateful branch-forking the chat-revision subsystem depends on.
+```
+productcut-backend-1    python start.py        :8000   (FastAPI + LangGraph)
+productcut-frontend-1   npm start              :3000   (Next.js)
+```
 
-### 9.2 Qwen Cloud / DashScope — the model plane
+Both containers are wired in `docker-compose.prod.yml`. The frontend waits for the backend's Docker healthcheck (`GET /health → 200`) before starting, via `depends_on: condition: service_healthy`.
 
-**Every** LLM (Concept, Critic Chain, Meta-Critic, Treatment, Shot-List, Edit Router, Edit Interpreter), **vision** (Product Truth Extractor and Continuity via Qwen-VL), and **speech** (Voiceover via Qwen TTS/CosyVoice) call goes through **Qwen Cloud / DashScope's OpenAI-compatible API endpoint.** For the hackathon this must be **visibly, actually called in the codebase** — not merely referenced in docs. The submission includes a **recorded clip plus a linked code file demonstrating an actual Alibaba Cloud service call**, which is an explicit submission requirement. Because every intelligent node — including both new agents and the chat-revision subsystem — is a DashScope call, this requirement is satisfied pervasively rather than in a single token integration point.
+**DNS:** Alibaba's VPC DNS (`100.100.2.136`, `100.100.2.138`) is injected into both containers so they can resolve the managed RDS hostname from within the Docker network.
 
-### 9.3 Storage — OSS
+### 9.2 CI/CD — GitHub Actions Auto-Deploy
 
-Alibaba Cloud **Object Storage (OSS)** holds all binary assets: the seller's **product photos**, each **per-shot generated video clip**, the assembled **master cut**, and the **three aspect-ratio exports** (9:16 / 1:1 / 16:9). It also caches demo assets for the pre-warmed safety-net run. A chat edit that only touches copy or CTA text (Section 5.16.1) never writes a new OSS object at all — untouched clips are referenced, not re-uploaded. Structured state never lives in OSS — only blobs, referenced by URI from the DB.
+Every push to `master` triggers `.github/workflows/deploy.yml`:
 
-### 9.4 Database — managed Postgres
+```
+push → master
+  └── appleboy/ssh-action → ECS root@43.112.113.40
+        ├── git pull origin master
+        ├── docker compose -f docker-compose.prod.yml up --build -d --remove-orphans
+        └── docker image prune -f
+```
 
-The **managed Postgres-compatible DB (PolarDB or RDS for PostgreSQL)** holds all structured job and agent state from Section 7: jobs, seller direction, product truths, budget ledger, script variants, treatments, shot lists, generated-asset records, human-review events, chat-edit requests, job versions, and the LangGraph checkpoint tables. One instance, one connection pool, no second data store introduced for either extension.
+Build credentials (`ECS_HOST`, `ECS_SSH_KEY`) are stored as GitHub Actions secrets and never appear in the repository. Images are built on the ECS instance itself (no registry needed); Docker layer caching keeps deploys fast between pushes that don't change Python dependencies or `npm` packages.
 
-### 9.5 Realtime — WebSocket over `astream_events`
+### 9.3 Qwen Cloud / DashScope — the model plane
 
-A **FastAPI WebSocket endpoint** is fed by LangGraph's **`astream_events`**, pushing **budget-ledger updates, the critic reasoning trace, continuity drift scores, and now edit-router decisions and preview diffs** to the frontend **live during a run.** This is what makes the autonomous pipeline legible in the demo — judges watch the negotiation, the spend, and (in an extended demo) a live chat edit happen in real time.
+**Every** LLM (Concept, Critic Chain, Meta-Critic, Treatment, Shot-List), **vision** (Product Truth Extractor and Continuity via Qwen-VL), and **speech** (Voiceover via Qwen TTS/CosyVoice) call goes through **Qwen Cloud / DashScope's OpenAI-compatible API endpoint.** Because every intelligent node is a DashScope call, the "native Qwen Cloud usage" requirement is satisfied pervasively rather than in a single integration point.
 
-### 9.6 Secrets & Configuration
+### 9.4 Storage — OSS
 
-All credentials — the **DashScope API key**, **video-gen (Wan/HappyHorse) API credentials**, the **DB connection string**, and **OSS access keys** — are injected via **Alibaba Cloud's secret/config management**, **never hardcoded** in the repository. This keeps the public GitHub repo (a submission requirement) free of live credentials while the deployed ECS instance receives them at runtime. No new secrets are introduced by either extension.
+Alibaba Cloud **Object Storage (OSS)** holds all binary assets: the seller's **product photos**, each **per-shot generated video clip**, the assembled **master cut**, and the **three aspect-ratio exports** (9:16 / 1:1 / 16:9). Structured state never lives in OSS — only blobs, referenced by URI from the DB.
+
+### 9.5 Database — managed Postgres (RDS)
+
+Alibaba Cloud **RDS for PostgreSQL** holds all structured job and agent state: jobs, seller direction, product truths, budget ledger, script variants, treatments, shot lists, generated-asset records, human-review events, and the **LangGraph checkpoint tables** (`langgraph-checkpoint-postgres`). One instance, one connection pool.
+
+### 9.6 Realtime — WebSocket over `astream_events`
+
+A **FastAPI WebSocket endpoint** is fed by LangGraph's **`astream_events`**, pushing **budget-ledger updates, the critic reasoning trace, continuity drift scores** to the frontend **live during a run.** This is what makes the autonomous pipeline legible in the demo — judges watch the negotiation, the spend, and the drift scores happen in real time.
+
+### 9.7 Secrets & Configuration
+
+All credentials — DashScope API keys, Wan API credentials, the DB connection string, and OSS access keys — live in `backend/.env` on the ECS instance and are injected at container runtime via Docker Compose `env_file`. They are never hardcoded in the repository or baked into the Docker image (`.dockerignore` excludes all `.env` files).
 
 ---
 
 ## 10. Judging Criteria Alignment
 
-The hackathon weights four criteria. Below, each of ProductCut's features maps explicitly to the criterion it serves, so the demo walkthrough can point at concrete evidence for every point.
+The hackathon weights four criteria. Below, each of Merchant Marquee's features maps explicitly to the criterion it serves, so the demo walkthrough can point at concrete evidence for every point.
 
-| Criterion | Weight | ProductCut features that satisfy it |
+| Criterion | Weight | Merchant Marquee features that satisfy it |
 |---|---|---|
 | **Technical Depth & Engineering** | **30%** | LangGraph DAG with a **bounded conditional retry loop** (Continuity → Video-Gen, capped at 2); **parallel fan-out via `Send()`**; **deterministic Budget Gate** with a hard cap and single reduce-loop; **checkpointer-backed resume** after crash; genuine **`interrupt()` pause/resume** human-in-the-loop; a **deterministic Justification Validator** that mechanically checks LLM output against source text before it's accepted; an **independent Merge Coherence Validator** that re-runs the Pacing-Checker's timing math and a blind coherence read against the Meta-Critic's own merge output before accepting it, with a capped retry **routed by failure type** to either the **Copy Editor** (constrained seam repair) or the Meta-Critic (piece swap) and a deterministic fallback; **checkpoint-fork-based scoped re-execution** for chat edits (re-running only downstream nodes, not the whole graph); deterministic ffmpeg Assembly and multi-format Export; clean split of relational state (Postgres) vs. blobs (OSS) |
 | **Innovation & AI Creativity** | **30%** | The **Critic Chain** — five parallel specialist checkers (including a **Body-Checker** scoring promise-payoff, redundancy, and emotional-trigger fidelity) reconciled by a **Meta-Critic that cross-pollinates** the best hook + body + CTA across variants, then handed to an **independent post-merge validator** rather than self-graded, whose voice/register failures are repaired by a dedicated **Copy Editor** — a constrained, professionally-scoped seam-polish node distinct from both the writer (Concept Agent) and the merge-builder (Meta-Critic) — rather than a blind re-roll; **constraint-enforced script diversity**; a **Product Truth Extractor** that grounds every downstream agent in specific, checkable product facts instead of category assumptions; a **Treatment Agent** that reasons from narrative-beat function to camera grammar (not product category to camera grammar), modeled on a real director's treatment; a **justification-forced shot schema** that structurally blocks template reuse; a **chat-based revision subsystem** (Edit Router + Edit Interpreter + Preview/Confirm) that performs surgical, cost-aware re-generation instead of a blind full re-run |

@@ -69,6 +69,7 @@ from typing import Optional
 from openai import AsyncOpenAI
 
 from langchain_core.callbacks.manager import adispatch_custom_event
+from langchain_core.runnables import RunnableConfig
 
 from agents._retry import create_completion
 from agents.justification_validator import BANNED_WORD, BEAT_FUNCTIONS, validate_justifications
@@ -545,7 +546,7 @@ async def generate_treatment(
             await client.close()
 
 
-async def treatment_agent_node(state: dict) -> dict:
+async def treatment_agent_node(state: dict, config: RunnableConfig) -> dict:
     """LangGraph node wrapper: reads winning_script/product_truths from state.
 
     Typed as `dict` rather than `ProductCutState` for the parameter -- this
@@ -570,7 +571,7 @@ async def treatment_agent_node(state: dict) -> dict:
     if treatment.get("character_anchor"):
         trace_note += " Script implies a person -- character_anchor set for Cast continuity."
 
-    await adispatch_custom_event("treatment_ready", {"treatment": treatment})
+    await adispatch_custom_event("treatment_ready", {"treatment": treatment}, config=config)
 
     return {
         "treatment": treatment,

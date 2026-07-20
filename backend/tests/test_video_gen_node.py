@@ -383,6 +383,7 @@ def test_prompt_budget_drops_quality_only_when_that_alone_suffices(caplog):
     """Just over budget from a longer-than-usual Mood dump -- dropping Quality
     alone is enough; Mood must survive UNCOMPRESSED and Lighting untouched."""
     shot = _shot("s1")
+    shot["justification"] = {**shot["justification"], "script_quote": ""}  # isolate budget trim behavior
     treatment = {**TREATMENT, "director_persona": "quiet mood word " * 90, "pacing_philosophy": "p"}
     with caplog.at_level("WARNING"):
         prompt = _build_prompt(shot, TRUTHS, treatment)
@@ -461,6 +462,7 @@ def test_prompt_budget_never_silently_exceeds_when_even_first_sentence_is_huge(c
     crashed on."""
     shot = _shot("s1")
     shot["description"] = "an enormous run-on action description with no sentence breaks at all " * 30
+    shot["justification"] = {**shot["justification"], "script_quote": ""}  # isolate tail-trim edge case
     with caplog.at_level("WARNING"):
         prompt = _build_prompt(shot, TRUTHS, TREATMENT)
     assert len(prompt) > PROMPT_CHAR_BUDGET

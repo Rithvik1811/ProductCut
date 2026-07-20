@@ -206,6 +206,7 @@ async def create_job_endpoint(
     reference_ad: str = Form(default=""),
     never_do: str = Form(default=""),
     notes: str = Form(default=""),
+    target_length_sec: int = Form(default=30),
     photos: list[UploadFile] = File(default=[]),
 ) -> dict:
     """Accept a seller's brief + photos + optional direction; return a job_id.
@@ -231,6 +232,9 @@ async def create_job_endpoint(
         sd["never_do"] = never_do
     if notes:
         sd["freeform"] = notes
+    # Always thread the requested duration through so the graph can size the
+    # script, shot count, and budget to it. Clamped to a sane [5, 60] range.
+    sd["target_length_sec"] = max(5, min(60, target_length_sec))
 
     # Persist to DB — required: brief/photos reach the graph exclusively via this row.
     try:

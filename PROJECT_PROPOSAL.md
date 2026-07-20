@@ -1,4 +1,4 @@
-# ProductCut — AI Product Video Studio for Small E-Commerce Sellers
+# Merchant Marquee — AI Product Video Studio for Small E-Commerce Sellers
 ### Global AI Hackathon with Qwen Cloud — Track 2: AI Showrunner
 
 ---
@@ -7,7 +7,7 @@
 
 Small Etsy/Shopify sellers cannot afford professional product video ads. A single 15–30 second ad video from a freelance studio costs $300–$1500 and takes days. Most sellers instead post static photos, which convert worse than video across every major ad platform.
 
-**ProductCut** lets a seller upload 2–3 product photos and a one-line creative brief (e.g. *"handmade ceramic mugs, cozy autumn vibe"*) and receive a finished 15–30 second product ad video, generated end-to-end by a coordinated crew of AI agents running on Qwen Cloud.
+**Merchant Marquee** lets a seller upload 2–3 product photos and a one-line creative brief (e.g. *"handmade ceramic mugs, cozy autumn vibe"*) and receive a finished 15–30 second product ad video, generated end-to-end by a coordinated crew of AI agents running on Qwen Cloud.
 
 This is not a general "type an idea, get any video" tool. The scope is deliberately narrow: **short-form product ad video for e-commerce sellers**, because narrow scope is what makes the agent pipeline's decisions (script choice, shot budget, visual consistency) meaningfully checkable and demoable in a hackathon timeframe.
 
@@ -15,7 +15,7 @@ This is not a general "type an idea, get any video" tool. The scope is deliberat
 
 ## 2. Why This Fits Track 2 (AI Showrunner)
 
-| Track 2 requirement | How ProductCut addresses it |
+| Track 2 requirement | How Merchant Marquee addresses it |
 |---|---|
 | Autonomously handles scriptwriting → storyboarding → video generation → editing | Concept Agent → Shot-List Agent → Video-Gen Agent → Edit/Assembly Agent, fully pipelined |
 | Demonstrate narrative ability | Concept Agent produces multiple script variants scored for brand-fit, not a single best-guess script |

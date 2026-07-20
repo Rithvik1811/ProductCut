@@ -388,6 +388,14 @@ def allocate_budget(
         lo = [_shot_floor_cost(s) for s in working]
         hi = [s["duration_sec"] * RATE_1080P for s in working]  # ceiling: THIS shot @ 1080p
 
+        # Fast path: cap already covers every shot at 1080p — no cuts needed.
+        # The dynamic cap (sum × 1.20) always exceeds sum(hi) (sum × 1.0), so
+        # without this the waterfill always reports infeasible (residual > 0
+        # because budget > sum(hi)) and triggers unnecessary shot cuts.
+        if cap >= sum(hi) - _EPS:
+            final_alloc = hi
+            break
+
         allocations, infeasible = _waterfill(targets, list(zip(lo, hi)), cap)
 
         if not infeasible:
@@ -480,14 +488,25 @@ async def budget_gate_node(
     shots = state.get("shot_list", [])
     product_truths = state.get("product_truths", [])
 
-    # KNOWN GAP: no job-level cap field in C1 — read an existing ledger cap if set,
-    # else the module default. Guard on `is not None` (a real cap of 0.0 is falsy).
+    # Cap resolution: prefer an already-set ledger cap; otherwise DERIVE the cap
+    # from the actual planned shots rather than a fixed default. Guard on
+    # `is not None` (a real cap of 0.0 is falsy).
     existing_ledger = state.get("budget_ledger") or {}
     cap = existing_ledger.get("cap")
     cap_source = "state.budget_ledger.cap"
     if cap is None:
-        cap = DEFAULT_JOB_BUDGET_CAP
-        cap_source = "DEFAULT_JOB_BUDGET_CAP (no job cap in C1 — see KNOWN GAP)"
+        if shots:
+            # Size the cap to cover all planned shots at 1080p with a 20% retry
+            # buffer. This is the natural ceiling: every shot rendered at maximum
+            # quality + retries, so the waterfill never makes arbitrary cuts from
+            # an undersized fixed default (e.g. a 30s / 5-shot ad needs $3.60 at
+            # 1080p, which the old flat $2.00 default could never fit).
+            raw_cost = sum(s["duration_sec"] * RATE_1080P for s in shots)
+            cap = round(raw_cost * 1.20, 4)
+            cap_source = f"dynamic ({len(shots)} shots × 1080p × 1.20 retry buffer = ${cap:.4f})"
+        else:
+            cap = DEFAULT_JOB_BUDGET_CAP
+            cap_source = "DEFAULT_JOB_BUDGET_CAP (no shots to size from)"
 
     result = allocate_budget(shots, product_truths, cap)
 

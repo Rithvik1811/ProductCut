@@ -377,7 +377,7 @@ async def test_node_wrapper_reads_state_and_appends_trace():
 
 
 @pytest.mark.asyncio
-async def test_node_wrapper_defaults_cap_when_budget_ledger_absent():
+async def test_node_wrapper_sizes_cap_to_shots_when_budget_ledger_absent():
     shots = [
         _shot("s1", "hook", "hook_hero", 4.0),
         _shot("s2", "problem", "lifestyle_context", 4.0),
@@ -392,10 +392,28 @@ async def test_node_wrapper_defaults_cap_when_budget_ledger_absent():
     node_runnable = RunnableLambda(budget_gate_node)
     out = await node_runnable.ainvoke(state)
 
-    assert out["budget_ledger"]["cap"] == DEFAULT_JOB_BUDGET_CAP
-    assert "DEFAULT_JOB_BUDGET_CAP" in out["reasoning_trace"] or "[budget_gate]" in out["reasoning_trace"]
+    # New behavior: with no preset ledger cap, the cap is DERIVED from the actual
+    # planned shots (all shots at 1080p + 20% retry buffer), not the flat default.
+    expected_cap = round(sum(s["duration_sec"] * RATE_1080P for s in shots) * 1.20, 4)
+    assert out["budget_ledger"]["cap"] == pytest.approx(expected_cap)
+    assert "dynamic" in out["reasoning_trace"]
     # reasoning_trace defaults to "" + note when absent from state
     assert out["reasoning_trace"].startswith("\n[budget_gate]")
+
+
+@pytest.mark.asyncio
+async def test_node_wrapper_falls_back_to_default_cap_with_no_shots():
+    state = {
+        "shot_list": [],
+        "product_truths": TRUTHS,
+        # no budget_ledger key at all, and no shots to size a cap from
+    }
+
+    node_runnable = RunnableLambda(budget_gate_node)
+    out = await node_runnable.ainvoke(state)
+
+    assert out["budget_ledger"]["cap"] == DEFAULT_JOB_BUDGET_CAP
+    assert "DEFAULT_JOB_BUDGET_CAP" in out["reasoning_trace"]
 
 
 @pytest.mark.asyncio

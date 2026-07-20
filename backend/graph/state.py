@@ -168,6 +168,7 @@ class SellerDirection(TypedDict, total=False):
     reference_ad: ReferenceAd
     never_do: str
     freeform: str
+    target_length_sec: NotRequired[int]   # requested ad duration; defaults to 30 in concept_agent
 
 
 class ProductTruth(TypedDict):
@@ -326,6 +327,11 @@ class Shot(TypedDict):
     lighting: str  # one shared string reused across every shot in the job
     negative_prompt: str
     reference_image_id: str
+    # Short static description of the shot's setting/environment (no motion),
+    # written by the Shot-List Agent (Call B) and consumed by the Video-Gen
+    # Node's T2I scene generator. NotRequired: absent shots fall back to the
+    # action description, so this is fully backward-compatible.
+    scene_environment: NotRequired[str]
     text_overlay_zone: Literal["none", "left_third", "right_third", "lower_third"]
     duration_sec: float
     allocated_budget: float

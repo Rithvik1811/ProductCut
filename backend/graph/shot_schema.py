@@ -29,7 +29,12 @@ refactoring state.py, which is out of scope here -- state.py is C1's frozen
 contract). If C1's Shot literals change, update these to match and bump the
 version below.
 
-version: 4
+version: 5
+  - v5: Novel-scene-generation branch adds an optional `scene_environment: str`
+        field (default "") -- a short static setting description written by the
+        Shot-List Agent (Call B) and consumed by the Video-Gen Node's T2I scene
+        generator. Optional + empty-string-default, so it is purely additive and
+        shots that omit it still validate (same additive-only policy as v3/v4).
   - v2: Phase 2 research (docs/TECHNICAL_DOCUMENTATION.md SS5.6) added two
         additive enum values ahead of the Shot-List Agent build: `rack_focus`
         (CameraMove) and `product_in_hand` (ShotType). Both are structurally
@@ -138,6 +143,10 @@ class ShotModel(BaseModel):
     lighting: str = Field(..., min_length=1)
     negative_prompt: str
     reference_image_id: str = Field(..., min_length=1)
+    # v5: short static scene/environment description written by the Shot-List
+    # Agent (Call B), consumed by the Video-Gen Node's T2I scene generator.
+    # Optional + empty-string-safe so shots that predate/omit it still validate.
+    scene_environment: str = ""
     text_overlay_zone: TextOverlayZone
     duration_sec: float = Field(..., gt=0)
     allocated_budget: float = Field(..., ge=0)

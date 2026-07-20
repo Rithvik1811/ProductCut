@@ -477,6 +477,7 @@ def _reupload_photos_to_intl_oss(photo_urls: list[str], job_id: str) -> list[str
     return result
 
 
+
 class VideoGenTimeoutError(Exception):
     """The Wan task never reached a terminal status within the wait timeout."""
 
@@ -603,6 +604,17 @@ def _build_prompt(shot: Shot, product_truths: list[ProductTruth], treatment: Opt
     # hero-length) description tail without ever eating into this short,
     # never-cut motion-completion/stillness clause.
     description = shot["description"]
+
+    # Script-sync fix: prepend the narration line as the primary action
+    # directive. Wan weights the first tokens of each section most heavily —
+    # leading with "Narrator says: X. Show this literally." forces the motion
+    # to match what is being said rather than drifting to generic product
+    # footage. Placed at the FRONT of description (not appended) so it
+    # survives the last-resort tail-trim and is never silently dropped.
+    # script_quote is always present (ShotJustification contract).
+    script_quote = (shot.get("justification") or {}).get("script_quote", "").strip()
+    if script_quote:
+        description = f'Narrator says: "{script_quote}". Show this action literally. {description}'
     _action_suffix = ""
     if is_human_shot:
         # Counters both the i2v static-start bias and a clip that's still
@@ -1065,6 +1077,7 @@ class _VideoGenGraphState(TypedDict, total=False):
     product_truths: list[ProductTruth]
     treatment: Optional[Treatment]
     product_photos: list[str]
+    job_id: str
     generated_shots: Annotated[dict[str, GeneratedShot], _merge_dicts]
     failures: Annotated[list[dict], _concat_lists]
 
@@ -1075,6 +1088,7 @@ async def generate_videos(
     treatment: Optional[Treatment],
     product_photos: list[str],
     generate_fn: Optional[GenerateFn] = None,
+    job_id: str = "unknown_job",
 ) -> tuple[list[Shot], dict[str, GeneratedShot]]:
     """Run the Video-Gen Node: one independent Wan call per shot, fanned out in
     parallel via LangGraph `Send()`, never sequential and never retried here.
@@ -1112,9 +1126,11 @@ async def generate_videos(
         image_url = _resolve_reference_image_url(shot["reference_image_id"], payload.get("product_photos", []))
         prompt = _build_prompt(shot, payload.get("product_truths", []), payload.get("treatment"))
 
+        first_frame_url = image_url
+
         try:
             call_kwargs = dict(
-                image_url=image_url,
+                image_url=first_frame_url,
                 prompt=prompt,
                 negative_prompt=shot["negative_prompt"],
                 duration_sec=duration,
@@ -1159,6 +1175,7 @@ async def generate_videos(
                     "product_truths": state.get("product_truths", []),
                     "treatment": state.get("treatment"),
                     "product_photos": state.get("product_photos", []),
+                    "job_id": state.get("job_id", "unknown_job"),
                 },
             )
             for shot in state.get("shots", [])
@@ -1195,6 +1212,7 @@ async def generate_videos(
             "product_truths": product_truths,
             "treatment": treatment,
             "product_photos": product_photos,
+            "job_id": job_id,
         }
     )
     return result.get("shots", []), result.get("generated_shots", {})
@@ -1268,6 +1286,7 @@ async def video_gen_node(
         product_truths=state.get("product_truths", []),
         treatment=state.get("treatment"),
         product_photos=product_photos,
+        job_id=job_id,
     )
 
     n_persisted = await _persist_generated_to_oss(generated, job_id)

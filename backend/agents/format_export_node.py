@@ -26,6 +26,7 @@ import ffmpeg
 import psycopg
 from psycopg.rows import dict_row
 from langchain_core.callbacks.manager import adispatch_custom_event
+from langchain_core.runnables import RunnableConfig
 
 from agents._oss import _download_to_temp, upload_export_to_oss
 from db.jobs import update_job_status
@@ -138,7 +139,7 @@ async def generate_format_exports(
             os.remove(local_master)
 
 
-async def format_export_node(state: ProductCutState) -> dict:
+async def format_export_node(state: ProductCutState, config: RunnableConfig) -> dict:
     """LangGraph node: runs after assembly_agent, writes state['exports']."""
     master_cut_uri = state.get("master_cut_uri", "")
     job_id = state.get("job_id", "unknown")
@@ -164,7 +165,7 @@ async def format_export_node(state: ProductCutState) -> dict:
     payload: dict = {"master_cut_uri": master_cut_uri, "exports": exports}
     if voiceover:
         payload["voiceover"] = voiceover
-    await adispatch_custom_event("job_complete", payload)
+    await adispatch_custom_event("job_complete", payload, config=config)
 
     # Update job status to "completed" in RDS (best-effort; never blocks the return).
     database_url = os.environ.get("DATABASE_URL")

@@ -1,0 +1,22 @@
+name: Deploy to ECS
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to ECS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.ECS_HOST }}
+          username: root
+          key: ${{ secrets.ECS_SSH_KEY }}
+          command_timeout: 20m
+          script: |
+            cd ~/merchant-marquee
+            git pull origin master
+            docker compose -f docker-compose.prod.yml up --build -d --remove-orphans
+            docker image prune -f

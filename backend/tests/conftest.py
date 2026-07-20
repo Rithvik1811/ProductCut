@@ -29,3 +29,10 @@ def _fake_dashscope_env(monkeypatch):
     # Force MemorySaver in graph.build regardless of what the real shell has
     # exported -- these tests must never touch a real Postgres instance.
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    # app/main.py runs load_dotenv() at import, which leaks the real Singapore
+    # video key into os.environ for the whole session. The Video-Gen Node's
+    # T2I scene generator activates whenever this key is present, and would then
+    # make a real wan2.7-image-pro network call even in tests that inject a fake
+    # generate_fn. Clear it (same hermetic posture as DATABASE_URL) so the T2I
+    # path stays off unless a test explicitly opts in.
+    monkeypatch.delenv("DASHSCOPE_VIDEO_INTL_API_KEY", raising=False)
