@@ -3,7 +3,7 @@ Voice Direction Agent — LLM pre-processing of winning_script beats for
 natural spoken-language TTS delivery.
 
 Runs serially before voiceover_caption_agent (both are in a sub-branch off
-merge_validator, running in parallel with visual_direction_agent).
+meta_critic, running in parallel with visual_direction_agent).
 
 Rewrites each ScriptBeat.line for:
   - Natural spoken English (contractions, breath phrasing, no formal register)

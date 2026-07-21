@@ -1,20 +1,15 @@
 """
 Phase 1-5: LangGraph graph -- Product Truth Extractor -> Concept Agent -> 5 parallel
-Critic Chain checkers -> Meta-Critic -> Merge Coherence Validator -> (Copy Editor
-loop-back | Meta-Critic swap retry | fallback) -> winning_script finalized ->
-[Treatment Agent -> Shot-List Agent -> Budget Gate -> Video-Gen Node -> Ken-Burns
-Fallback Node -> Continuity Agent -> Continuity Gate -> (retry loop back to
-Video-Gen | Assembly Agent)] IN PARALLEL WITH [Voiceover + Caption Agent ->
-Assembly Agent] -> END.
+Critic Chain checkers -> Meta-Critic -> winning_script finalized ->
+[Visual Direction Agent -> Treatment Agent -> Shot-List Agent -> Budget Gate ->
+Video-Gen Node -> Ken-Burns Fallback Node -> Continuity Agent -> Continuity Gate ->
+(retry loop back to Video-Gen | Assembly Agent)] IN PARALLEL WITH
+[Voice Direction Agent -> Voiceover + Caption Agent -> Assembly Agent] -> END.
 
-The full Critic Chain (§5.4) is wired end to end, including the Merge Coherence
-Validator (§5.4.7) and Copy Editor (§5.4.8). `winning_script` is set by
-merge_validator_node on EITHER a full pass ("finalize") or a terminal fallback
-("fallback") -- both are legitimate, usable winning scripts (the fallback is
-the single highest composite-scoring original variant, not a degraded/partial
-result), so BOTH route into Treatment Agent rather than only "finalize". Phase 2
-(Treatment Agent §5.5, Shot-List Agent §5.6, Budget Gate §5.7) and Phase 3
-(Video-Gen Node §5.8, Ken-Burns Fallback Node §5.9) are wired in after it.
+The Critic Chain (§5.4) scores all 4 script variants; Meta-Critic picks the
+best-scoring one and writes it to `winning_script` directly. No cross-pollination
+merge. Phase 2 (Treatment Agent §5.5, Shot-List Agent §5.6, Budget Gate §5.7) and
+Phase 3 (Video-Gen Node §5.8, Ken-Burns Fallback Node §5.9) run after it.
 
 Phase 4 (§5.10) adds the Continuity Agent (Qwen-VL drift scoring) and the
 Continuity Gate (capped retry + human-in-the-loop) after Ken-Burns, plus a
@@ -29,16 +24,9 @@ this file directly: a retry loop is a graph-topology feature that can only be
 exercised in the compiled graph.
 
 Phase 5 (§5.11) adds the Voiceover + Caption Agent as a SECOND parallel branch
-off `merge_validator` -- it reads only `winning_script`, not `treatment`/
-`shot_list`/`generated_shots`, so it does not need to wait behind Video-Gen or
-Continuity and starts the same superstep as `treatment_agent`. Wired via
-`_route_after_merge_validation_with_vo` (below), which wraps the pure
-`route_after_merge_validation` (kept untouched -- it is independently
-unit-tested and also called internally by `merge_validator_node`) to fan out
-to BOTH `treatment_agent` and `voiceover_caption_agent` on "finalize"/
-"fallback", per this node's own documented wiring plan
-(agents/voiceover_caption_agent.py, "HOW THIS COMPOSES WITH THE REST OF THE
-GRAPH").
+off meta_critic -- it reads only `winning_script`, not `treatment`/`shot_list`/
+`generated_shots`, so it does not need to wait behind Video-Gen or Continuity and
+starts the same superstep as `visual_direction_agent`.
 
 Phase 5 (§5.12) adds the Assembly Agent as a genuine FAN-IN JOIN of the two
 branches above: `voiceover_caption_agent -> assembly_agent` and

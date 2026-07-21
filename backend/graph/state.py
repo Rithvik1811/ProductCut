@@ -479,9 +479,8 @@ class ProductCutState(TypedDict, total=False):
     pending_merge_candidate: NotRequired[dict]         # LEGACY
     coherence_validation_result: NotRequired[dict]     # LEGACY
     last_copy_edit: NotRequired[dict]                  # LEGACY
-    # Set by merge_validator_node when there is genuinely no merge candidate to
-    # validate (e.g. meta_critic_result.outcome == "all_excluded_failure" --
-    # every script variant was rejected by the critic chain). Its presence is
+    # Set by meta_critic_node when all script variants are rejected by the critic
+    # chain (meta_critic_result.outcome == "all_excluded_failure"). Its presence is
     # the terminal-failure signal build.py's routing checks BEFORE
     # route_after_merge_validation (which requires a non-empty merge_attempts
     # and would itself raise on this exact state). Job-level, unlike

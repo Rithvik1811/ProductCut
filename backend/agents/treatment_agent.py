@@ -54,7 +54,7 @@ deterministically to the doc's literal lowest-risk treatment (static
 framing, shared lighting only) rather than blocking the job.
 
 WIRED into graph/build.py: `treatment_agent -> shot_list_agent -> budget_gate
--> video_gen`, downstream of `winning_script` (set by merge_validator_node).
+-> video_gen`, downstream of `winning_script` (set by meta_critic_node).
 Was standalone and tested before that, same posture hook_checker.py was in
 before its siblings existed; that follow-up wiring has since landed.
 """

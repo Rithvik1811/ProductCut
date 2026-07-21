@@ -1,68 +1,34 @@
 """
 Meta-Critic (§5.4.6) of the Critic Chain.
 
-Spec of record: docs/TECHNICAL_DOCUMENTATION.md §5.4.6. The Meta-Critic is the
-*aggregator/reconciler* that sits after the five parallel specialist checkers
-(Hook §5.4.1, Pacing §5.4.2, Body §5.4.3, CTA §5.4.4, Tone §5.4.5) and produces a
-cross-pollinated **merge CANDIDATE** — the strongest hook + strongest body +
-strongest CTA stitched across the surviving variants, with re-derived contiguous
-beat timestamps and an ADR-shaped rationale.
+Sits after the five parallel specialist checkers (Hook §5.4.1, Pacing §5.4.2,
+Body §5.4.3, CTA §5.4.4, Tone §5.4.5) and picks the single best-scoring script
+variant. No cross-pollination — the concept agent generates 4 distinct scripts,
+the critics score all 4, and the meta-critic selects the winner by composite
+score and writes it directly to `winning_script`.
 
-Critically (per the doc) the Meta-Critic **no longer has the final word** on
-whether its own merge is coherent: this module produces a *candidate + rationale*
-only. A separate Merge Coherence Validator (§5.4.7) — NOT built here — independently
-re-checks it before anything is written to `winning_script`. Every framing in this
-module matches "merge candidate, not yet final".
+Architecture note (why it accepts pre-computed score dicts, not the checkers):
+The architecture fans each checker's edge INTO the Meta-Critic — it reconciles
+their outputs, it does not orchestrate the checkers.
 
-Architecture note (why it accepts pre-computed score dicts, not the checkers).
-The architecture diagram fans each checker's edge INTO the Meta-Critic node — the
-Meta-Critic reconciles their outputs, it does not orchestrate the checkers. So this
-function takes five pre-computed per-variant score dicts as parameters. (It also
-happens to be the only way it *can* work on this branch: Hook-Checker §5.4.1 and
-Pacing-Checker §5.4.2 were built by a teammate on an unmerged branch and are not
-importable here.)
-
-The deterministic / LLM split (mirrors Body-Checker's "mechanical where mechanical
-is possible" posture — §5.4.3 — and the Pacing-Checker's justification for being
-pure code):
-
+The deterministic steps:
   * STEP 1  Disqualification gate ............ CODE  (never_do_violation exclusion)
-  * STEP 2  Composite table + fallback pick ... CODE  (weighted arithmetic)
-  * STEP 3  Axis leaderboards ................. LLM   (reads justifications)
-  * STEP 4  Compatibility audition ............ LLM   (promise-payoff / seams / triggers)
-  * STEP 5  Swap-down rule (cap 2) ............ LLM   (substitute on offending axis)
-  * STEP 6  Re-time the merged beats .......... CODE  (film/VO-editor arithmetic)
-  * STEP 7  Merge rationale (ADR-shaped) ...... LLM   (decision/evidence/steelman/...)
+  * STEP 2  Composite table + best-pick ....... CODE  (weighted arithmetic → winner)
 
-The single LLM call (Steps 3/4/5/7) *selects* pieces and *explains*; it never edits
-copy and never computes timestamps. Only Step 6's code changes timestamps. Its raw
-JSON is validated by a Pydantic model (`extra="forbid"`, same precedent as the
-other checkers) BEFORE the code does Step 6's re-timing on top of the selection.
+Scope note — what this is NOT:
+  * NOT the Merge Coherence Validator, Copy Editor, Concept Agent, or any checker.
+  * It does NOT write to graph.state directly; meta_critic_node() wraps that.
 
-Scope note — what this is NOT (identical posture to body_checker.py):
-  * WIRED into the live LangGraph graph (backend/graph/build.py): the fan-in
-    join after the 5 parallel checkers, feeding into merge_validator. Was a
-    standalone, independently-callable/testable function before the Concept
-    Agent existed; that follow-up wiring has since landed.
-  * NOT the Merge Coherence Validator (§5.4.7), the Copy Editor (§5.4.8), the
-    Concept Agent (§5.3), or any of the five checkers. Meta-Critic only.
-  * It does NOT write to `graph.state` (`critic_scores` / `winning_script` /
-    `merge_attempts`). It returns a validated result object; wiring that into state
-    is a separate task. We import the C1 `ScriptVariant` type for input typing only.
-
-Beat convention (the hook/body/CTA split already implicit in the other checkers):
-  hook  = beats[0]        (a single opening beat)
-  body  = beats[1:-1]     (the middle)
-  CTA   = beats[-1]       (the closing ask)
+Beat convention:
+  hook  = beats[0]
+  body  = beats[1:-1]
+  CTA   = beats[-1]
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Optional
-
-from openai import APIError
 
 from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.runnables import RunnableConfig
@@ -75,7 +41,6 @@ from pydantic import (
     field_validator,
 )
 
-from agents.critic_llm import call_qwen_json_validated
 from graph.state import ProductCutState, ScriptVariant
 
 logger = logging.getLogger("productcut.critics.meta")
@@ -932,42 +897,26 @@ def meta_critic(
     model: Optional[str] = None,
     validator_feedback: Optional[str] = None,
 ) -> MetaCriticResult:
-    """Meta-Critic (§5.4.6): reconcile the five checkers into a merge CANDIDATE.
+    """Meta-Critic (§5.4.6): score all variants and pick the single best.
 
-    Accepts pre-computed per-variant score dicts for all five checkers (it is a
-    reconciler, not an orchestrator — each checker fans its own edge in). Produces a
-    cross-pollinated merge candidate + ADR rationale; it does NOT decide whether the
-    merge is coherent (that is the independent Merge Coherence Validator, §5.4.7) and
-    does NOT write to graph state.
-
-    Deterministic vs. LLM: Steps 1 (disqualify), 2 (composite + fallback), and 6
-    (re-timing) are pure code; Steps 3/4/5/7 (leaderboards, audition, swap-down,
-    rationale) are one Qwen call whose raw JSON is Pydantic-validated before the
-    re-timing runs on the selection. Copy is never edited; only Step 6 touches times.
+    Accepts pre-computed per-variant score dicts for all five checkers.
+    Runs disqualification (Step 1) and composite scoring (Step 2), then
+    returns. The caller (meta_critic_node) picks the winner via
+    fallback_variant_id and writes it to winning_script directly.
 
     Args:
-        variants:      the surviving-or-not ScriptVariants (typically four).
-        hook_scores:   {variant_id: {hook_score, justification}}      (§5.4.1)
-        pacing_scores: {variant_id: {pacing_score, violations[]}}     (§5.4.2)
-        body_scores:   {variant_id: {completion_score, promise_payoff_match,
-                       emotional_trigger_landed, redundant_beat_pairs, justification}} (§5.4.3)
-        cta_scores:    {variant_id: {cta_score, justification}}       (§5.4.4)
-        tone_scores:   {variant_id: {tone_score, justification, never_do_violation}} (§5.4.5)
-        model:         optional model-id override; defaults to MODEL_TEXT (.env).
-        validator_feedback: optional. Set by meta_critic_node on the Merge Coherence
-                       Validator's (§5.4.7) promise-payoff swap retry -- the CV's own
-                       cold-read justification naming the specific clash it found,
-                       so this retry doesn't re-select the same failing assembly.
-                       None on a first attempt (the common case).
+        variants:      the ScriptVariants from the Concept Agent (typically 4).
+        hook_scores:   {variant_id: {hook_score, justification}}
+        pacing_scores: {variant_id: {pacing_score, violations[]}}
+        body_scores:   {variant_id: {completion_score, promise_payoff_match, ...}}
+        cta_scores:    {variant_id: {cta_score, justification}}
+        tone_scores:   {variant_id: {tone_score, justification, never_do_violation}}
+        model:         optional model-id override (unused — kept for API compatibility).
+        validator_feedback: unused (kept for API compatibility with unit tests).
 
     Returns:
-        MetaCriticResult — outcome, merge_candidate (or None), disqualified list,
-        composite table, fallback_variant_id, survivor_ids.
-
-    Raises:
-        ValueError:    a score dict is missing a variant/field, or the LLM output
-                       fails structural/cross validation.
-        QwenJSONError: the model returned non-JSON (from the shared helper).
+        MetaCriticResult — outcome, disqualified list, composite table,
+        fallback_variant_id (the best survivor), survivor_ids.
     """
     if not variants:
         return MetaCriticResult(outcome="all_excluded_failure", notes="no variants supplied")
@@ -989,194 +938,23 @@ def meta_critic(
             ),
         )
 
-    # STEP 2 — Composite table + fallback (CODE). Computed for all survivors even in
-    # the short-circuit case, so the trace always carries the table.
+    # STEP 2 — Composite table + best-pick (CODE).
     composites = compute_composites(
         survivor_ids, hook_scores, pacing_scores, body_scores, cta_scores, tone_scores
     )
     fallback_id = pick_fallback(composites, tone_scores, hook_scores)
 
-    # Degenerate: exactly one survivor wins un-negotiated (short-circuit, flagged).
-    if len(survivor_ids) == 1:
-        only = idx[survivor_ids[0]]
-        target = int(only["target_length_sec"])
-        beats = only.get("beats") or []
-        merged_beats = [
-            MergedBeat(
-                t_start=float(b["t_start"]),
-                t_end=float(b["t_end"]),
-                line=b["line"],
-                role=("hook" if i == 0 else "cta" if i == len(beats) - 1 else "body"),
-                source_variant_id=only["variant_id"],
-            )
-            for i, b in enumerate(beats)
-        ]
-        candidate = MergeCandidate(
-            hook_source_variant_id=only["variant_id"],
-            body_source_variant_id=only["variant_id"],
-            cta_source_variant_id=only["variant_id"],
-            merged_beats=merged_beats,
-            # Always join the beat lines, never prefer `only["text"]` -- the Concept
-            # Agent writes `text` and `beats[].line` in the same call but nothing
-            # guarantees they're byte-identical (contractions, dropped connective
-            # words), and downstream (Treatment Agent, Shot-List Agent) prompt the
-            # model to quote a BEAT'S OWN LINE while the Justification Validator
-            # checks that quote against `winning_script["text"]`. Any divergence
-            # here would make a correctly-instructed model response fail validation
-            # for no real reason -- confirmed as a real bug via an adversarial
-            # integration test pass (Phase 2, see docs/BUILD_TASKS.md). Matches the
-            # normal cross-pollinated merge path's `merged_text` (build_merge_candidate,
-            # this module), which already always joins beat lines and was never wrong.
-            merged_text=" ".join(b["line"] for b in beats),
-            target_length_sec=target,
-            overall_reasoning=(
-                "Single surviving variant after never_do disqualification — it wins "
-                "un-negotiated; no merge or audition is needed (short-circuit §5.4.6)."
-            ),
-        )
-        return MetaCriticResult(
-            outcome="single_survivor",
-            merge_candidate=candidate,
-            disqualified=disqualified,
-            composite_scores=composites,
-            fallback_variant_id=fallback_id,
-            survivor_ids=survivor_ids,
-            notes="short-circuit: exactly one compliant variant survived",
-        )
-
-    # STEPS 3/4/5/7 — the single LLM call over the SURVIVORS only.
-    survivor_variants = [idx[vid] for vid in survivor_ids]
-    payload = {
-        "surviving_variants": [
-            _llm_payload_for_variant(
-                v, hook_scores, pacing_scores, body_scores, cta_scores, tone_scores
-            )
-            for v in survivor_variants
-        ],
-        "composite_scores": composites,
-        "fallback_variant_id": fallback_id,
-        "target_length_sec": _target_length(variants, survivor_ids),
-    }
-    user_prompt = (
-        "Reconcile these surviving ad-script variants into ONE cross-pollinated merge "
-        "candidate. Walk Steps 3 (leaderboards), 4 (audition), 5 (swap-down, cap 2), "
-        "7 (ADR rationale). Only select from these variants. The merge must beat the "
-        "named fallback or you must set no_compatible_merge=true.\n\n"
-        + json.dumps(payload, ensure_ascii=False, indent=2)
-    )
-    if validator_feedback:
-        user_prompt += (
-            "\n\nThe previous merge candidate from these same survivors failed "
-            "independent validation (Merge Coherence Validator, §5.4.7): "
-            f"{validator_feedback}\n"
-            "Do NOT return the same hook/body/cta assembly again. Swap the flagged "
-            "axis to its next-ranked piece among these survivors (or, if no swap "
-            "resolves the flagged clash, set no_compatible_merge=true)."
-        )
-    logger.info(
-        "Meta-Critic reconciling %d survivor(s) (excluded %d); fallback=%s",
-        len(survivor_ids),
-        len(disqualified),
-        fallback_id,
-    )
-
-    # call_qwen_json_validated -- see agents/critic_llm.py's docstring: a real
-    # live run found this class of call had zero retry on a validation (as
-    # opposed to transport) failure, which killed the whole graph run on
-    # one-off LLM phrasing variance in a sibling checker (Body-Checker).
-    survivor_id_set = set(survivor_ids)
-    try:
-        out = call_qwen_json_validated(
-            _META_SYSTEM_PROMPT,
-            user_prompt,
-            lambda raw: _validate_llm_output(raw, survivor_id_set),
-            model=model,
-        )
-    except APIError as exc:
-        # DashScope content-filter (DataInspectionFailed) fires intermittently on
-        # meta-critic responses. Retrying the same prompt won't help — skip straight
-        # to the composite-score fallback so the pipeline can continue.
-        if "DataInspectionFailed" in str(exc):
-            logger.warning(
-                "Meta-Critic: content-filter block (DataInspectionFailed) — "
-                "using composite-score fallback %s", fallback_id
-            )
-            fb = idx[fallback_id]
-            return MetaCriticResult(
-                outcome="fallback_no_compatible_merge",
-                merge_candidate=MergeCandidate(
-                    hook_variant_id=fallback_id,
-                    body_variant_id=fallback_id,
-                    cta_variant_id=fallback_id,
-                    hook=fb.hook,
-                    body=fb.body,
-                    cta=fb.cta,
-                    substitutions=[],
-                    rationale=[],
-                ),
-                disqualified=disqualified,
-                composite_scores=composites,
-                fallback_variant_id=fallback_id,
-                survivor_ids=survivor_ids,
-                notes="content-filter fallback: DataInspectionFailed",
-            )
-        raise
-
-    target = _target_length(variants, survivor_ids)
-
-    # No compatible merge beats the fallback -> return the fallback variant unmerged.
-    if out.no_compatible_merge:
-        fb = idx[fallback_id]
-        candidate = _build_merge_candidate(
-            fb, fb, fb, target,
-            rationale=out.rationale,
-            overall_reasoning=out.overall_reasoning,
-            audition=out.audition,
-            substitutions=out.substitutions,
-        )
-        return MetaCriticResult(
-            outcome="fallback_no_compatible_merge",
-            merge_candidate=candidate,
-            disqualified=disqualified,
-            composite_scores=composites,
-            fallback_variant_id=fallback_id,
-            survivor_ids=survivor_ids,
-            notes=(
-                "no compatible cross-variant assembly beat the single best script "
-                f"({fallback_id}) within the 2-substitution cap; returned it unmerged"
-            ),
-        )
-
-    hook_src = idx[out.hook_source_variant_id]
-    body_src = idx[out.body_source_variant_id]
-    cta_src = idx[out.cta_source_variant_id]
-    candidate = _build_merge_candidate(
-        hook_src, body_src, cta_src, target,
-        rationale=out.rationale,
-        overall_reasoning=out.overall_reasoning,
-        audition=out.audition,
-        substitutions=out.substitutions,
-    )
-
-    unanimous = (
-        out.hook_source_variant_id
-        == out.body_source_variant_id
-        == out.cta_source_variant_id
-    )
+    # Return the best-scoring survivor directly — no cross-pollination LLM call.
+    outcome = "single_survivor" if len(survivor_ids) == 1 else "unanimous"
     return MetaCriticResult(
-        outcome="unanimous" if unanimous else "cross_pollinated",
-        merge_candidate=candidate,
+        outcome=outcome,
         disqualified=disqualified,
         composite_scores=composites,
         fallback_variant_id=fallback_id,
         survivor_ids=survivor_ids,
-        notes=(
-            "all three winning pieces came from one variant (unanimous, not "
-            "cross-pollinated)"
-            if unanimous
-            else "cross-pollinated merge from more than one surviving variant"
-        ),
+        notes="best-score pick; no cross-pollination" if len(survivor_ids) > 1 else "single survivor",
     )
+
 
 
 # ===========================================================================
@@ -1237,13 +1015,9 @@ def _winning_script_from_variant(variant: ScriptVariant) -> dict:
 async def meta_critic_node(state: ProductCutState, config: RunnableConfig) -> dict:
     """LangGraph node wrapper: the fan-in join after the 5 parallel checkers.
 
-    Assembles the full CriticScore per variant (every variant, not just survivors —
-    disqualification is a merge-selection concern, not a reason to withhold a
-    variant's own scores from the trace), calls meta_critic() for the actual
-    cross-pollinated merge candidate, and stashes the raw MetaCriticResult for
-    merge_validator_node (wired downstream, graph/build.py) to consume. Does NOT set
-    winning_script — per docs/TECHNICAL_DOCUMENTATION.md §5.4.7, that only happens
-    once an independent validator passes.
+    Scores all 4 variants via meta_critic(), picks the highest-scoring survivor,
+    and writes winning_script directly. Dispatches job_failed if all variants
+    were excluded by never_do checks.
     """
     variants = state["script_variants"]
     hook_scores = state.get("hook_scores", {})
@@ -1278,16 +1052,7 @@ async def meta_critic_node(state: ProductCutState, config: RunnableConfig) -> di
             "never_do_violation": tone_scores.get(vid, {}).get("never_do_violation", False),
         }
 
-    # If the Merge Coherence Validator (§5.4.7) routed back here after a
-    # promise-payoff failure, its cold-read justification (naming the specific
-    # clash) is the last merge_attempts entry's coherence_check.justification --
-    # pass it through so this retry doesn't re-select the same failing assembly.
-    prior_attempts = state.get("merge_attempts") or []
-    validator_feedback = None
-    if prior_attempts:
-        last_check = prior_attempts[-1].get("coherence_check") or {}
-        if last_check.get("failure_kind") == "promise_payoff":
-            validator_feedback = last_check.get("justification")
+    idx = _variant_index(variants)
 
     result = await asyncio.to_thread(
         meta_critic,
@@ -1297,7 +1062,6 @@ async def meta_critic_node(state: ProductCutState, config: RunnableConfig) -> di
         body_scores,
         cta_scores,
         tone_scores,
-        validator_feedback=validator_feedback,
     )
     result_dict = result.model_dump()
 

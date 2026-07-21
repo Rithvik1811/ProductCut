@@ -33,18 +33,8 @@ export default function ScriptsPanel({
 }: ScriptsPanelProps) {
   const winner = scripts.find((x) => x.id === winnerId);
 
-  // Compute merged scores: best of each dimension across all variants.
-  // Pacing stays with the winning base variant (it's deterministic re-timing, not cross-pollinated).
-  const mergedScores: Scores | null =
-    scripts.length > 0
-      ? {
-          hook: Math.max(...scripts.map((s) => s.scores.hook)),
-          pacing: winner?.scores.pacing ?? Math.max(...scripts.map((s) => s.scores.pacing)),
-          completion: Math.max(...scripts.map((s) => s.scores.completion)),
-          cta: Math.max(...scripts.map((s) => s.scores.cta)),
-          tone: Math.max(...scripts.map((s) => s.scores.tone)),
-        }
-      : null;
+  // Winning variant's actual scores (the meta-critic picks the single best composite variant).
+  const mergedScores: Scores | null = winner?.scores ?? null;
 
   const mergedTotal = mergedScores
     ? Math.round(
@@ -85,9 +75,9 @@ export default function ScriptsPanel({
           Scriptwriter + Critic — winning cut
         </span>
 
-        {/* Merged score label at top */}
+        {/* Winning script score label at top */}
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, letterSpacing: "0.5px", color: "rgba(249,244,234,0.75)", marginBottom: 14 }}>
-          Merged cut · score {mergedTotal}
+          Winning script · score {mergedTotal}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 34, maxWidth: 900 }}>
           {winner?.lines.map((line, i) => (
@@ -127,12 +117,12 @@ export default function ScriptsPanel({
           </div>
         )}
 
-        {/* Tab strip: Merged tab + individual variants */}
+        {/* Tab strip: Winner tab + individual variants */}
         <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: "rgba(249,244,234,0.72)", marginBottom: 14, borderTop: "1px solid rgba(249,244,234,0.16)", paddingTop: 30 }}>
           All variants
         </div>
         <div role="tablist" aria-label="Script variants" style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 28 }}>
-          {/* Merged tab */}
+          {/* Winner tab */}
           {mergedScores && (
             <button
               id={`script-tab-${MERGED_TAB_ID}`}
@@ -159,7 +149,7 @@ export default function ScriptsPanel({
                 minHeight: 44,
               }}
             >
-              <span>Merged ✓</span>
+              <span>Winner ✓</span>
               <span style={{ fontFamily: "var(--font-mono)", opacity: 0.55 }}>{mergedTotal}</span>
             </button>
           )}
@@ -209,7 +199,7 @@ export default function ScriptsPanel({
           style={{ borderTop: "1px solid rgba(249,244,234,0.16)", paddingTop: 28 }}
         >
           <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "rgba(249,244,234,0.72)", marginBottom: 20 }}>
-            {isMergedActive ? "Merged cut · breakdown" : `${activeScript?.title ?? ""} · breakdown`}
+            {isMergedActive ? "Winning script · breakdown" : `${activeScript?.title ?? ""} · breakdown`}
           </div>
           <div data-rid="scripts-breakdown-grid" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.4fr", gap: 56, alignItems: "start" }}>
             <div>
@@ -242,7 +232,7 @@ export default function ScriptsPanel({
             </div>
             <p style={{ margin: 0, fontSize: "14.5px", lineHeight: 1.7, color: "rgba(249,244,234,0.85)", textAlign: "left" }}>
               {isMergedActive
-                ? "Cross-pollinated from all variants: best hook, completion, CTA, and tone each selected independently. Pacing carries over from the winning base variant. Validated coherent by the Merge Coherence Validator."
+                ? "The highest-scoring script variant, picked by the Meta-Critic's composite score (hook 25%, pacing 20%, completion 20%, CTA 20%, tone 15%). All four variants were scored independently; the best overall wins."
                 : (activeScript?.reasoning ?? "")}
             </p>
           </div>

@@ -40,8 +40,8 @@ PARALLEL BRANCH, NOT A DOWNSTREAM STEP OF VIDEO-GEN. This module's entry point,
 `state["voiceover"]` + `voiceover_reasoning_trace` (its OWN dedicated trace key,
 not the shared `reasoning_trace`; see graph/state.py's v7 changelog).
 
-WIRING (graph/build.py): merge_validator's "finalize"/"fallback" routes fan out
-to BOTH visual_direction_agent AND voice_direction_agent (parallel sub-branches).
+WIRING (graph/build.py): meta_critic fans out to BOTH visual_direction_agent AND
+voice_direction_agent in parallel after picking the winning script.
 voice_direction_agent -> voiceover_caption_agent -> assembly_agent (defer=True).
 
 REQUIREMENT 1 -- PER-BEAT vs. WHOLE-SCRIPT TTS. Chosen: PER-BEAT (one
@@ -406,7 +406,7 @@ async def generate_voiceover(
 
     raw_beats = winning_script.get("beats") or []
     if not raw_beats:
-        # Degenerate case (should not happen -- merge_validator_node always
+        # Degenerate case (should not happen -- meta_critic_node always
         # produces beats -- but never crash on a malformed winning_script).
         logger.warning("Voiceover: winning_script has no beats -- producing an empty, fully-silent track.")
         raw_beats = [{"t_start": 0.0, "t_end": MIN_ESTIMATED_BEAT_SEC, "line": ""}]
@@ -491,7 +491,7 @@ async def voiceover_caption_agent_node(
     REQUIREMENT 4).
 
     `state["winning_script"]` is accessed directly (KeyError, not `.get(...)`)
-    -- this node's one hard precondition is that `merge_validator_node` already
+    -- this node's one hard precondition is that `meta_critic_node` already
     finalized it. `directed_script_beats` is read with `.get(...)` -- it is a
     NotRequired enhancement (the Voice Direction Agent runs as a serial pre-step
     but this node still degrades gracefully to the raw beat lines if it's absent).
