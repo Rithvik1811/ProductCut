@@ -534,7 +534,7 @@ export default function StudioPage() {
               ...newScripts.filter((ns) => !s.scripts.some((x) => x.id === ns.id)),
             ],
             winnerId: firstWinner ?? s.winnerId,
-            activeScriptId: firstWinner ?? s.activeScriptId,
+            activeScriptId: firstWinner ? "__merged__" : s.activeScriptId,
           }));
           bumpPhase(PHASES.indexOf("Scripts"));
           break;
@@ -1076,7 +1076,7 @@ export default function StudioPage() {
         maxPhaseIdx: PHASES.length - 1,
         truths: hydrated?.truths.length ? hydrated.truths : entry.truths,
         scripts: hydrated?.scripts ?? [],
-        activeScriptId: hydrated?.winnerId ?? null,
+        activeScriptId: hydrated?.winnerId ? "__merged__" : null,
         winnerId: hydrated?.winnerId ?? null,
         merge: null,
         treatment: hydrated?.treatment ?? null,

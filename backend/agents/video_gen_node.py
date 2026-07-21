@@ -404,6 +404,23 @@ _CAMERA_MOVE_DESCRIPTIONS: dict[str, str] = {
     ),
 }
 
+# Structural-integrity fix (lighter double-lid / phantom-part hallucination).
+# Wan sometimes generates product parts that do not exist in the reference photo
+# (a second lid, a phantom hinge, a duplicate component) and then dissolves them.
+# A positive anchor clause stating that the product's PART COUNT and OVERALL FORM
+# must stay constant throughout the clip is empirically more reliable than a
+# negative prompt alone — the same rationale that established _IDENTITY_PROTECTION_CLAUSE
+# for human-interaction shots (docs/DERISK_VIDEO_GEN_RESULT.md §6). The product's
+# EXISTING mechanisms may operate normally (a lid CAN open if that is the product's
+# actual behavior); what this clause prevents is the ADDITION or REMOVAL of parts
+# that are not in the reference photo. Placed in Composition (never cut).
+_PRODUCT_STRUCTURE_CLAUSE = (
+    "The product's physical structure must exactly match the reference photo "
+    "at all times: the same number of parts, the same overall form and silhouette. "
+    "No phantom components may appear and no existing parts may dissolve or vanish. "
+    "Existing mechanisms may operate naturally."
+)
+
 # Appended to Action/Motion for every product-alone shot (non-human, non-static)
 # to counter Wan's documented bias toward under-motion (arXiv:2406.15735 —
 # the same static-start bias that drives _ACTION_URGENCY_CLAUSE on human shots).
@@ -426,11 +443,30 @@ _PRODUCT_MOTION_URGENCY_CLAUSE = (
 DEFAULT_PROMPT_EXTEND = os.getenv("VIDEO_GEN_PROMPT_EXTEND", "false").lower() in ("1", "true")
 
 # How many times to retry a shot that fails with a hard infra error (timeout or
-# api_error) before falling back to Ken-Burns. Budget-exceeded failures are NOT
-# retried (they're deterministic -- the allocated budget simply can't cover the
-# shot and a retry would fail the same way). Env-overridable per the codebase's
-# flag-not-hardcode pattern.
-MAX_INFRA_RETRIES = int(os.getenv("VIDEO_GEN_MAX_INFRA_RETRIES", "3"))
+# api_error). Set high so transient rate-limit hits (from parallel fan-out
+# saturating the Wan concurrency quota) are retried until the semaphore drains
+# and a slot opens. Ken-Burns is NOT triggered for infra failures -- only for
+# the budget_exceeded path when force-generate is also disabled (see below).
+# Env-overridable per the codebase's flag-not-hardcode pattern.
+MAX_INFRA_RETRIES = int(os.getenv("VIDEO_GEN_MAX_INFRA_RETRIES", "7"))
+
+# Max simultaneous Wan API calls. DashScope rate-limits concurrent Wan tasks
+# (typically 2-4 per account); the fan-out's Send() would otherwise submit all
+# shots at once, causing later shots to get queue-rejected (api_error) even
+# though they'd succeed if submitted serially. The semaphore is created inside
+# generate_videos() (not at module level) so it is scoped to the event loop
+# that's actually running the job, avoiding the "attached to a different loop"
+# error on Python 3.10+.
+WAN_MAX_CONCURRENCY = int(os.getenv("VIDEO_GEN_WAN_CONCURRENCY", "2"))
+
+# When True (default), a budget_exceeded shot is force-generated at minimum
+# quality (MIN_SHOT_DURATION_SEC, 720p) rather than handed off to Ken-Burns.
+# The shot goes over its allocated_budget but the job gets a real clip instead
+# of a static pan/zoom. Set VIDEO_GEN_FORCE_ON_BUDGET_EXCEEDED=0 to restore
+# the original hand-off behavior.
+FORCE_GENERATE_ON_BUDGET_EXCEEDED = os.getenv(
+    "VIDEO_GEN_FORCE_ON_BUDGET_EXCEEDED", "1"
+).lower() not in ("0", "false", "no")
 # Undeclared extra key on Shot dict (same "costs nothing" posture as
 # IDENTITY_HARD_FAIL_STREAK_KEY in continuity_gate.py -- Shot is never
 # re-validated after shot_list_agent.py's assembly step).
@@ -666,6 +702,13 @@ def _build_prompt(shot: Shot, product_truths: list[ProductTruth], treatment: Opt
         # of the sections that pass cuts) so it survives even if Quality/Mood/
         # Lighting all get cut.
         composition += f". {_IDENTITY_PROTECTION_CLAUSE}"
+    else:
+        # Structural-integrity fix: product-only shots must not gain or lose
+        # physical parts vs. the reference photo. Placed in Composition (never
+        # cut) for the same reason as _IDENTITY_PROTECTION_CLAUSE. Mechanisms
+        # are allowed to operate (a lighter lid CAN open); phantom additions and
+        # disappearing parts are what this blocks.
+        composition += f". {_PRODUCT_STRUCTURE_CLAUSE}"
 
     mood_full = (
         f"{treatment['director_persona']}; {treatment['pacing_philosophy']}"
@@ -1115,6 +1158,15 @@ async def generate_videos(
     """
     fn: GenerateFn = generate_fn or _call_wan_video_gen
 
+    # Concurrency limiter: DashScope typically allows 2-4 simultaneous Wan tasks
+    # per account. Without this, Send() fans out ALL shots at once and the later
+    # submissions get queue-rejected (api_error) before they even start. The
+    # semaphore serialises submission slots; polling (the bulk of each shot's
+    # wall time) still runs concurrently, so this adds minimal latency while
+    # almost eliminating the queue-rejection failure mode. Created here (not at
+    # module level) so it is bound to the event loop that's actually running.
+    _wan_semaphore = asyncio.Semaphore(WAN_MAX_CONCURRENCY)
+
     # Optional, for future A/B testing and this fix's own reproducibility during
     # manual verification -- unset by default, which preserves today's random-
     # seed production behavior exactly (see `seed` note on _call_wan_video_gen).
@@ -1127,12 +1179,25 @@ async def generate_videos(
 
         duration, resolution, budget_failure = _resolve_generation_params(shot)
         if budget_failure is not None:
-            logger.warning(
-                "Video-Gen Node: shot %s cannot be generated within budget (%s) -- "
-                "handing off, no API call made, retry_count left untouched.",
-                shot_id, budget_failure["detail"],
-            )
-            return {"failures": [{"shot_id": shot_id, "failure_reason": budget_failure}]}
+            if FORCE_GENERATE_ON_BUDGET_EXCEEDED:
+                # Force-generate at minimum quality rather than hand off to
+                # Ken-Burns. The shot goes over its allocated_budget but the
+                # job gets a real clip. Ken-Burns is only for true infra
+                # failures after all retries are exhausted.
+                logger.warning(
+                    "Video-Gen Node: shot %s budget_exceeded (%s) -- forcing "
+                    "%gs at 720p (FORCE_GENERATE_ON_BUDGET_EXCEEDED=true; "
+                    "going over allocated_budget to avoid Ken-Burns).",
+                    shot_id, budget_failure["detail"], MIN_SHOT_DURATION_SEC,
+                )
+                duration, resolution = MIN_SHOT_DURATION_SEC, "720P"
+            else:
+                logger.warning(
+                    "Video-Gen Node: shot %s cannot be generated within budget (%s) -- "
+                    "handing off, no API call made, retry_count left untouched.",
+                    shot_id, budget_failure["detail"],
+                )
+                return {"failures": [{"shot_id": shot_id, "failure_reason": budget_failure}]}
 
         image_url = _resolve_reference_image_url(shot["reference_image_id"], payload.get("product_photos", []))
         prompt = _build_prompt(shot, payload.get("product_truths", []), payload.get("treatment"))
@@ -1149,7 +1214,15 @@ async def generate_videos(
             )
             if seed is not None:
                 call_kwargs["seed"] = seed
-            video_url = await fn(**call_kwargs)
+            # Concurrency semaphore (WAN_MAX_CONCURRENCY slots). Wraps the full
+            # fn() call (submit + poll loop) to cap how many shots run at once.
+            # Without this, Send() fans all shots out simultaneously: DashScope
+            # rejects beyond-quota submissions with api_error before they even
+            # start. At 2 slots and ~90s per shot, 6 shots take ~270s (3 pairs)
+            # instead of ~540s serial or ~90s parallel-but-failing -- the right
+            # tradeoff for a pipeline that must never produce Ken-Burns.
+            async with _wan_semaphore:
+                video_url = await fn(**call_kwargs)
         except VideoGenTimeoutError as exc:
             logger.warning("Video-Gen Node: shot %s timed out -- handing off, retry_count untouched: %s", shot_id, exc)
             return {"failures": [{"shot_id": shot_id, "failure_reason": {"type": FAILURE_TYPE_TIMEOUT, "detail": str(exc)}}]}

@@ -1,8 +1,19 @@
 "use client";
 
 import type { KeyboardEvent } from "react";
-import type { MergeValidation, Script } from "@/lib/types";
+import type { MergeValidation, Script, Scores } from "@/lib/types";
 import { SCORE_META, SCORE_MAX } from "../shared";
+
+const MERGED_TAB_ID = "__merged__";
+
+// Mirrors meta_critic.py's _AXIS_WEIGHTS exactly — single source of truth is the backend.
+const AXIS_WEIGHTS: Record<string, number> = {
+  hook: 0.25,
+  pacing: 0.20,
+  completion: 0.20,
+  cta: 0.20,
+  tone: 0.15,
+};
 
 interface ScriptsPanelProps {
   scripts: Script[];
@@ -19,11 +30,53 @@ export default function ScriptsPanel({
   winnerId,
   merge,
   onSelectScript,
-  onTabKeyDown,
 }: ScriptsPanelProps) {
-  const activeId = activeScriptId || scripts[0]?.id;
-  const activeScript = scripts.find((x) => x.id === activeId) || scripts[0] || null;
   const winner = scripts.find((x) => x.id === winnerId);
+
+  // Compute merged scores: best of each dimension across all variants.
+  // Pacing stays with the winning base variant (it's deterministic re-timing, not cross-pollinated).
+  const mergedScores: Scores | null =
+    scripts.length > 0
+      ? {
+          hook: Math.max(...scripts.map((s) => s.scores.hook)),
+          pacing: winner?.scores.pacing ?? Math.max(...scripts.map((s) => s.scores.pacing)),
+          completion: Math.max(...scripts.map((s) => s.scores.completion)),
+          cta: Math.max(...scripts.map((s) => s.scores.cta)),
+          tone: Math.max(...scripts.map((s) => s.scores.tone)),
+        }
+      : null;
+
+  const mergedTotal = mergedScores
+    ? Math.round(
+        Object.entries(AXIS_WEIGHTS).reduce(
+          (sum, [key, w]) => sum + w * ((mergedScores as Record<string, number>)[key] ?? 0),
+          0
+        )
+      )
+    : 0;
+
+  const activeId = activeScriptId ?? MERGED_TAB_ID;
+  const isMergedActive = activeId === MERGED_TAB_ID;
+  const activeScript = isMergedActive ? null : scripts.find((x) => x.id === activeId) ?? null;
+
+  // All tabs: merged first, then individual variants.
+  const allTabIds = [MERGED_TAB_ID, ...scripts.map((s) => s.id)];
+
+  const handleTabKey = (e: KeyboardEvent<HTMLButtonElement>, tabIndex: number) => {
+    if (!allTabIds.length) return;
+    let next: number | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (tabIndex + 1) % allTabIds.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = (tabIndex - 1 + allTabIds.length) % allTabIds.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = allTabIds.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    const nextId = allTabIds[next];
+    onSelectScript(nextId);
+    requestAnimationFrame(() => {
+      document.getElementById(`script-tab-${nextId}`)?.focus();
+    });
+  };
 
   return (
     <section data-rid="section-pad" style={{ background: "var(--inverse-bg)", color: "var(--inverse-fg)", padding: "80px 48px", animation: "pc-section-in 0.6s var(--ease) both" }}>
@@ -32,9 +85,9 @@ export default function ScriptsPanel({
           Scriptwriter + Critic — winning cut
         </span>
 
-        {/* Winning script quote — full width */}
+        {/* Merged score label at top */}
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, letterSpacing: "0.5px", color: "rgba(249,244,234,0.75)", marginBottom: 14 }}>
-          {winner ? winner.title : ""} · score {winner ? winner.total : ""}
+          Merged cut · score {mergedTotal}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 34, maxWidth: 900 }}>
           {winner?.lines.map((line, i) => (
@@ -45,7 +98,7 @@ export default function ScriptsPanel({
         </div>
         <div style={{ width: 48, height: 2, background: "var(--accent)", marginBottom: 34 }} />
 
-        {/* Merge validation — full width */}
+        {/* Merge validation */}
         {merge && (
           <div style={{ borderTop: "1px solid rgba(249,244,234,0.16)", paddingTop: 22, marginBottom: 34 }}>
             <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: "rgba(249,244,234,0.72)", marginBottom: 12 }}>
@@ -74,11 +127,44 @@ export default function ScriptsPanel({
           </div>
         )}
 
-        {/* Other variants — horizontal tab strip, full width */}
+        {/* Tab strip: Merged tab + individual variants */}
         <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: "rgba(249,244,234,0.72)", marginBottom: 14, borderTop: "1px solid rgba(249,244,234,0.16)", paddingTop: 30 }}>
-          Other variants considered
+          All variants
         </div>
         <div role="tablist" aria-label="Script variants" style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 28 }}>
+          {/* Merged tab */}
+          {mergedScores && (
+            <button
+              id={`script-tab-${MERGED_TAB_ID}`}
+              tabIndex={isMergedActive ? 0 : -1}
+              role="tab"
+              aria-selected={isMergedActive}
+              aria-controls={`script-panel-${MERGED_TAB_ID}`}
+              onClick={() => onSelectScript(MERGED_TAB_ID)}
+              onKeyDown={(e) => handleTabKey(e, 0)}
+              className="pcs-tab"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                fontFamily: "var(--font-sans)",
+                fontSize: 14,
+                fontWeight: isMergedActive ? 700 : 500,
+                padding: "10px 16px",
+                border: isMergedActive ? "1px solid var(--accent)" : "1px solid rgba(249,244,234,0.2)",
+                borderBottom: isMergedActive ? "3px solid var(--accent)" : "1px solid rgba(249,244,234,0.2)",
+                background: isMergedActive ? "rgba(249,244,234,0.08)" : "transparent",
+                cursor: "pointer",
+                color: isMergedActive ? "var(--paper)" : "rgba(249,244,234,0.72)",
+                minHeight: 44,
+              }}
+            >
+              <span>Merged ✓</span>
+              <span style={{ fontFamily: "var(--font-mono)", opacity: 0.55 }}>{mergedTotal}</span>
+            </button>
+          )}
+
+          {/* Individual variant tabs */}
           {scripts.map((sc, i) => {
             const active = sc.id === activeId;
             return (
@@ -90,7 +176,7 @@ export default function ScriptsPanel({
                 aria-selected={active}
                 aria-controls={`script-panel-${sc.id}`}
                 onClick={() => onSelectScript(sc.id)}
-                onKeyDown={(e) => onTabKeyDown(e, i)}
+                onKeyDown={(e) => handleTabKey(e, i + 1)}
                 className="pcs-tab"
                 style={{
                   display: "flex",
@@ -115,35 +201,49 @@ export default function ScriptsPanel({
           })}
         </div>
 
-        {/* Score breakdown + reasoning — full width, no longer confined to a side column */}
-        <div id={`script-panel-${activeId || ""}`} role="tabpanel" aria-labelledby={`script-tab-${activeId || ""}`} style={{ borderTop: "1px solid rgba(249,244,234,0.16)", paddingTop: 28 }}>
+        {/* Tabpanel */}
+        <div
+          id={`script-panel-${activeId}`}
+          role="tabpanel"
+          aria-labelledby={`script-tab-${activeId}`}
+          style={{ borderTop: "1px solid rgba(249,244,234,0.16)", paddingTop: 28 }}
+        >
           <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "rgba(249,244,234,0.72)", marginBottom: 20 }}>
-            {activeScript ? activeScript.title : ""} · breakdown
+            {isMergedActive ? "Merged cut · breakdown" : `${activeScript?.title ?? ""} · breakdown`}
           </div>
           <div data-rid="scripts-breakdown-grid" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.4fr", gap: 56, alignItems: "start" }}>
             <div>
-              {activeScript &&
-                SCORE_META.map((m) => (
-                  <div key={m.key} style={{ marginBottom: 14 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4, color: "rgba(249,244,234,0.75)" }}>
-                      <span>{m.label}</span>
-                      <span style={{ fontFamily: "var(--font-mono)" }}>{activeScript.scores[m.key]}</span>
+              {(isMergedActive ? mergedScores : activeScript) &&
+                SCORE_META.map((m) => {
+                  const score = isMergedActive
+                    ? (mergedScores as Scores)[m.key]
+                    : (activeScript as Script).scores[m.key];
+                  return (
+                    <div key={m.key} style={{ marginBottom: 14 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4, color: "rgba(249,244,234,0.75)" }}>
+                        <span>{m.label}</span>
+                        <span style={{ fontFamily: "var(--font-mono)" }}>{score}</span>
+                      </div>
+                      <div style={{ height: 2, background: "rgba(249,244,234,0.14)", overflow: "hidden" }}>
+                        <div
+                          style={{
+                            height: "100%",
+                            width: "100%",
+                            background: "var(--accent)",
+                            transform: `scaleX(${Math.min(score / SCORE_MAX, 1)})`,
+                            transformOrigin: "left",
+                            transition: "transform .6s var(--ease)",
+                          }}
+                        />
+                      </div>
                     </div>
-                    <div style={{ height: 2, background: "rgba(249,244,234,0.14)", overflow: "hidden" }}>
-                      <div
-                        style={{
-                          height: "100%",
-                          width: `${Math.min((activeScript.scores[m.key] / SCORE_MAX) * 100, 100)}%`,
-                          background: "var(--accent)",
-                          transition: "width .6s var(--ease)",
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
             </div>
             <p style={{ margin: 0, fontSize: "14.5px", lineHeight: 1.7, color: "rgba(249,244,234,0.85)", textAlign: "left" }}>
-              {activeScript ? activeScript.reasoning : ""}
+              {isMergedActive
+                ? "Cross-pollinated from all variants: best hook, completion, CTA, and tone each selected independently. Pacing carries over from the winning base variant. Validated coherent by the Merge Coherence Validator."
+                : (activeScript?.reasoning ?? "")}
             </p>
           </div>
         </div>

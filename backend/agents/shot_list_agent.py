@@ -180,7 +180,17 @@ NEGATIVE_PROMPT_BOILERPLATE = (
     # attractor plus one generic-but-concrete substitution phrase.
     ", object substitution, product transforming into a different object, "
     "pulsing light, light flicker, exposure flicker, iris breathing, "
-    "changing brightness, inconsistent lighting, light animation"
+    "changing brightness, inconsistent lighting, light animation, "
+    # phantom-part fix (lighter double-lid hallucination). Wan sometimes
+    # generates product parts that do not exist in the reference photo (a second
+    # lid, a phantom hinge, a duplicate component) and then dissolves them.
+    # The product's EXISTING mechanisms may operate normally (a lid CAN open if
+    # it is the product's actual mechanism); what is prohibited is ADDING parts
+    # that aren't in the reference or REMOVING parts that are. Named as concrete
+    # visual concepts so Wan's negative-weighting has a real referent to cancel.
+    "phantom product parts, extra product components, duplicate product parts, "
+    "product parts appearing out of nowhere, product parts dissolving, "
+    "product structure changing, product gaining extra pieces"
 )
 
 # Phone-related wrong-object terms are only safe to use as negatives when the

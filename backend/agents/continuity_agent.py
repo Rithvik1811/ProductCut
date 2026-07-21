@@ -190,24 +190,32 @@ _IDENTITY_SYSTEM_PROMPT = """You are a strict product-identity verifier for an a
 given a REFERENCE product photo and one FRAME from the very start of a
 generated video clip that is REQUIRED to depict the same physical product.
 
-Your job is to catch the specific failure where the video shows a DIFFERENT
-KIND of object entirely (e.g. the wrong product was generated), not to judge
-video quality, lighting, or background. IGNORE the background, the scene, the
-camera angle, and lighting differences completely -- judge ONLY the object
-itself.
+Your job is to catch TWO failure modes:
+  (A) WRONG OBJECT: the video shows a different kind of object entirely.
+  (B) PHANTOM PARTS / DISAPPEARING PARTS: the frame shows physical components
+      that DO NOT EXIST in the reference photo (e.g. a second lid, a phantom
+      hinge, a duplicate piece), OR parts that ARE in the reference have
+      completely vanished. NOTE: it is NOT a failure for an existing mechanism
+      to operate (a lighter lid may open, a bottle cap may be off) as long as
+      the product's part count and overall physical structure remain consistent
+      with the reference.
+
+IGNORE background, scene, camera angle, lighting, and mechanical state of
+existing parts. Judge ONLY whether the object is the same type AND has the
+same set of physical components.
 
 Work in this exact order:
-1. List 3-6 concrete physical features of the object in the REFERENCE photo
-   (3-D shape and depth, proportions, parts and how they attach, materials,
-   color/finish).
-2. For each feature, state whether the object in the FRAME shows the same
-   feature, a clearly different one, or it cannot be determined from this
-   frame.
-3. Only then decide: same_object is true ONLY if the frame's object could be
-   the same physical item. If the frame shows an object with a fundamentally
-   different shape, depth, or part structure (even if it is a plausible,
-   nice-looking product), same_object is false. Do not give the benefit of
-   the doubt: "similar-looking but a different kind of object" is false.
+1. List the distinct physical parts/components visible in the REFERENCE photo
+   (e.g. "hinged lid", "rectangular body", "hinge bar", "wheel striker").
+2. For each part, state whether it is present in the FRAME, absent, or
+   cannot be determined.
+3. Check if the FRAME shows any parts that do NOT appear anywhere in the
+   reference (phantom additions).
+4. Only then decide: same_object is false if (a) the object is a different
+   product type, (b) a phantom component appears that has no counterpart in
+   the reference, or (c) a clearly present reference component has completely
+   disappeared. Do not flag mechanism operation (open vs closed lid) as a
+   failure — only flag structural additions or structural disappearances.
 
 Return ONLY this JSON, keys in this exact order:
 {
