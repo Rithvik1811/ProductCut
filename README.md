@@ -25,7 +25,7 @@ Small Etsy and Shopify sellers can't afford professional video ads ($300–$1,50
 
 ```mermaid
 flowchart TD
-    IN([Seller · Photos + Brief]) --> BR[Brand Research\nTavily]
+    IN([Seller · Photos + Brief]) --> BR[Brand Research\nTavily · optional]
     BR --> PTE[Product Truth Extractor\nQwen-VL]
     PTE --> PRN[Product Research\nTavily + Qwen · spec products]
     PRN --> CA[Concept Agent\nQwen-Max · 4 scripts]
@@ -85,7 +85,7 @@ flowchart TD
 | Stage | Node(s) | What happens |
 |---|---|---|
 | **1 — Ingest** | `Ingest Node` | Validates photos (2–3), stores to OSS, captures optional seller direction (mood words, never-do constraints, freeform notes) |
-| **2 — Brand Research** | `Brand Research` (Tavily) | Fetches and summarises brand identity from the seller's URL (if provided); no-op if omitted |
+| **2 — Brand Research** | `Brand Research` (Tavily) | **Optional.** Fetches and summarises brand identity from the seller's URL. No-op if no URL is provided — the node is always in the graph but skips immediately |
 | **3 — Product Truths** | `Product Truth Extractor` (Qwen-VL) | Extracts 6–10 specific facts from uploaded photos — colors, materials, textures, scale cues, form factor. Every fact gets a `truth_id` that flows through all downstream nodes |
 | **4 — Product Research** | `Product Research Node` (Tavily + Qwen) | For spec-driven products only: autonomously web-searches for public specs/features and distills up to 10 checkable facts for copy and VO. No-op for appearance-driven products |
 | **5 — Scripts** | `Concept Agent` (Qwen-Max) | Generates 4 structurally distinct ad scripts, each using a different copywriting framework (PAS, AIDA, BAB, Hook-Problem-Solution), with every claim grounded to a truth ID |
@@ -106,7 +106,7 @@ flowchart TD
 
 | Agent | Model | Role |
 |---|---|---|
-| Brand Research | Tavily | Fetches and summarises brand identity from seller URL |
+| Brand Research | Tavily | Fetches and summarises brand identity from seller URL — skips if no URL provided |
 | Product Truth Extractor | Qwen-VL | Photo → specific facts with truth IDs |
 | Product Research Node | Tavily + Qwen | Web-sourced specs/features for spec-driven products (copy/VO only) |
 | Concept Agent | Qwen-Max | 4 distinct ad scripts, framework/hook/trigger forced diverse |
