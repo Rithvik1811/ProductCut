@@ -167,6 +167,11 @@ def _make_client() -> AsyncOpenAI:
 # ---------------------------------------------------------------------------
 _CLASSIFY_SYSTEM = """You are a research classifier for an ad-generation pipeline.
 
+You are given the seller's brief, extracted photo facts, AND the actual product
+photos. Use the images directly to identify brand markings, model names, colorways,
+logos, or any detail that would sharpen the search queries — the photos often reveal
+more than the text facts alone.
+
 Your job: decide whether a web search would uncover intelligence about this
 product that is NOT visible in its photos and would make an ad more compelling.
 
@@ -188,8 +193,9 @@ default to "research_needed" when uncertain.
 
 Also return:
 - product_name: the single most searchable name for this product (brand + model
-  if identifiable, e.g. "BIC Classic Lighter", "Meta Quest 3S"; generic category
-  if no brand is visible, e.g. "windproof lighter", "ceramic mug"). Never null.
+  if identifiable from the images or brief, e.g. "BIC Classic Lighter",
+  "Meta Quest 3S"; generic category if no brand is visible, e.g. "windproof
+  lighter", "ceramic mug"). Never null. Use what you can see in the photos.
 - search_queries: up to 3 concise queries that together cover (a) what the product
   DOES / its key features, (b) typical USE CASES and moments people use it in,
   and (c) specs or reviews if applicable. Every query must include the product name.
@@ -201,21 +207,38 @@ Return ONLY valid JSON in this exact shape, no preamble:
 
 
 async def _classify(
-    client: AsyncOpenAI, model: str, brief: str, brand_name: str, truth_facts: list[str]
+    client: AsyncOpenAI,
+    model: str,
+    brief: str,
+    brand_name: str,
+    truth_facts: list[str],
+    photo_urls: list[str],
 ) -> dict:
     truths_block = "\n".join(f"- {f}" for f in truth_facts) if truth_facts else "(none)"
-    user = (
-        f"Brand: {brand_name or '(unknown)'}\n"
-        f"Seller brief: {brief}\n\n"
-        f"Facts observed in the product photos:\n{truths_block}\n\n"
-        "Classify this product:"
-    )
+
+    # Build multimodal content: text context + all product images.
+    parts: list[dict] = [
+        {
+            "type": "text",
+            "text": (
+                f"Brand: {brand_name or '(unknown)'}\n"
+                f"Seller brief: {brief}\n\n"
+                f"Facts already extracted from the photos:\n{truths_block}\n\n"
+                "Product photos follow:"
+            ),
+        }
+    ]
+    for i, url in enumerate(photo_urls, start=1):
+        parts.append({"type": "text", "text": f"photo_{i}:"})
+        parts.append({"type": "image_url", "image_url": {"url": url}})
+    parts.append({"type": "text", "text": "Classify this product:"})
+
     raw = await create_completion(
         client,
         model=model,
         messages=[
             {"role": "system", "content": _CLASSIFY_SYSTEM},
-            {"role": "user", "content": user},
+            {"role": "user", "content": parts},
         ],
         temperature=0,
     )
@@ -496,6 +519,7 @@ async def product_research_node(
         brand_name = state.get("brand_name", "") or ""
         brief = state.get("brief", "") or ""
         truth_facts = [t.get("fact", "") for t in state.get("product_truths", []) or []]
+        photo_urls = state.get("product_photos", []) or []
         model = os.environ["MODEL_TEXT"]
         has_tavily = bool(os.environ.get("TAVILY_API_KEY"))
 
@@ -505,7 +529,7 @@ async def product_research_node(
                 # Run brand research and product classification in parallel.
                 brand_context, classification_result = await asyncio.gather(
                     _brand_research(client, model, brand_url, brand_name),
-                    _classify(client, model, brief, brand_name, truth_facts),
+                    _classify(client, model, brief, brand_name, truth_facts, photo_urls),
                 )
             elif brand_url:
                 # No Tavily for product search, but brand page has an httpx fallback.
@@ -513,7 +537,7 @@ async def product_research_node(
                 classification_result = None
             elif has_tavily:
                 brand_context = ""
-                classification_result = await _classify(client, model, brief, brand_name, truth_facts)
+                classification_result = await _classify(client, model, brief, brand_name, truth_facts, photo_urls)
             else:
                 logger.info("product_research_node: no brand_url and no TAVILY_API_KEY — skipping")
                 return _skipped()
