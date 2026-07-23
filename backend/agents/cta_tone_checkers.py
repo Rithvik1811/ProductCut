@@ -171,9 +171,41 @@ The mismatch direction matters: a hard-sell / high-urgency script scores LOW whe
 the brief/mood words call for something calmer, and vice-versa. Explain the
 specific mismatch (or match) in the justification.
 
-A line that reads like a product-catalog or image-caption visual description
-rather than something a person would say to camera is off-voice -- score it
-down regardless of brand fit.
+OFF-VOICE PATTERN — spec-sheet/catalog copy: lines that merely name a physical
+attribute with no claim, action, or viewer consequence score MAX 2 on tone
+regardless of brand-fit. Examples:
+- Score 2 max: "The tall glass sits perfectly on your table." / "Available in
+  coral and orange." / "Two wicks provide even burn coverage."
+- Score 4-5: "The kind of glow that makes a room feel like somewhere you actually
+  want to be." / "You'll smell the orange peel before you even light it." / "One
+  candle, the whole room."
+The difference: spec-sheet copy describes the product TO the viewer. On-voice copy
+describes what the product DOES FOR the viewer or what the viewer will EXPERIENCE.
+
+PRODUCT-TITLE DUMP PATTERN: a line whose grammatical subject is a multi-word
+product listing title or brand + category string, paired with a generic descriptor
+or blanket endorsement ("fits perfectly", "works great", "looks beautiful",
+"smells amazing", "is incredible"), scores MAX 2 on tone regardless of brand-fit.
+This reads as a product-page listing read aloud, not a human voice — it stops the
+flow and breaks register no matter how on-voice the lines around it are.
+On-voice copy names what the product DOES for the viewer without front-loading the
+full product name:
+- Score 2 max: "[Full multi-word product title] fits perfectly." / "[Brand + product
+  name] looks amazing." — listing title as subject, generic adjective as predicate.
+- Score 4-5: "It disappears on your wrist — until someone asks where you got it." /
+  "You stop noticing it the moment you put it on." — viewer-facing, no name dump.
+Apply this cap even when the rest of the script is on-voice. A single name-dump
+line mid-script is a register break for the whole piece.
+
+CALIBRATION WITH SELLING CHARACTERIZATION: the selling_characterization in
+the user content tells you what the buyer is actually paying for. If it says
+the buyer is paying for a sensory/atmospheric/ritual experience, then a vivid,
+specific sensory line IS on-voice for that product and should be scored on its
+brand/mood fit alone — not penalized as spec-sheet. If it says the buyer is
+paying for a functional outcome, a pretty-sounding-but-disconnected atmospheric
+line is evasion and still caps at 2. Apply the same test as the body-checker:
+for experience/ritual-led products, naming the sensation already is the payoff;
+for function-led products, atmospheric language without consequence is evasion.
 
 NEVER-DO HARD GATE:
 - If seller_direction includes a "never_do" constraint, set "never_do_violation":
@@ -335,6 +367,8 @@ def check_tone(
     seller_direction: Optional[SellerDirection],
     variants: list[ScriptVariant],
     *,
+    product_type: str = "",
+    selling_characterization: str = "",
     model: Optional[str] = None,
 ) -> dict[str, dict]:
     """Tone-Checker (§5.4.5): score brand/tone fit + enforce the never_do hard gate.
@@ -368,6 +402,8 @@ def check_tone(
             {
                 "brief": brief,
                 "seller_direction": seller_direction,
+                "product_type": product_type,
+                "selling_characterization": selling_characterization,
                 "variants": payload,
             },
             ensure_ascii=False,
@@ -400,7 +436,12 @@ async def cta_checker_node(state: ProductCutState) -> dict:
 async def tone_checker_node(state: ProductCutState) -> dict:
     """LangGraph node wrapper. check_tone is sync + blocking network I/O -> asyncio.to_thread."""
     scores = await asyncio.to_thread(
-        check_tone, state["brief"], state.get("seller_direction"), state["script_variants"]
+        check_tone,
+        state["brief"],
+        state.get("seller_direction"),
+        state["script_variants"],
+        product_type=state.get("product_type", ""),
+        selling_characterization=state.get("selling_characterization", ""),
     )
     return {"tone_scores": scores}
 

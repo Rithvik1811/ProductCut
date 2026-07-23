@@ -240,6 +240,8 @@ def _build_negative_prompt(product_truths: list = None, extra: str = "") -> str:
 HUMAN_SHOT_MIN_DURATION_SEC = 3.0
 HUMAN_SHOT_MAX_DURATION_SEC = 4.0
 
+HUMAN_INTERACTION_SHOT_TYPES: frozenset[str] = frozenset({"product_in_hand", "worn_in_use"})
+
 # Only one motion source at a time on a human shot: the human's own motion is
 # already one source, so stacking a genuinely RISKY second one (an orbit or a
 # rack focus) compounds drift the way the affordance rubric below warns about
@@ -793,13 +795,71 @@ def _reference_image_id(truth_fact_id: str, truths_by_id: dict[str, ProductTruth
     return source if source else "photo_1"
 
 
+def _research_scene_block(
+    research_facts: Optional[list],
+    selling_characterization: str = "",
+) -> str:
+    """Small supplemental block of web-sourced scene suggestions (use_case /
+    visual_moment research facts) for Call B. Clearly marked as web-sourced
+    INSPIRATION, never as photo-confirmed product truths — the existing rule
+    that every shot cite a real product truth/quote is untouched. Returns ""
+    when empty so the prompt is byte-identical to before when no research ran.
+
+    v16: when a selling_characterization is available, the guidance shifts from a
+    hardcoded lifestyle/ambiance mandate to reasoning about whether a scene fact
+    is what the buyer is actually paying for (per the characterization) or just
+    supporting texture — no new hardcoded rule, only context to reason from."""
+    facts = [
+        f for f in (research_facts or [])
+        if f.get("category") in ("use_case", "visual_moment")
+    ]
+    if not facts:
+        return ""
+
+    if selling_characterization:
+        guidance = (
+            "RESEARCH-SUGGESTED SCENES — use the selling characterization to decide "
+            "whether a use_case/visual_moment fact should become its own lifestyle_context "
+            "shot or stay as supporting texture within another shot. Ask: is the "
+            "ENVIRONMENT or FEELING this fact describes actually what the buyer is paying "
+            "for (per the selling characterization), or is it one supporting detail among "
+            "several equally important product facts? When it's the former, give it a real "
+            "shot — do not compress it into the background of a product macro. When it's "
+            "the latter, a passing visual reference is enough. This decision must be "
+            "grounded in an actual fact below — never assumed from the product's name alone:"
+        )
+    else:
+        # Fallback for jobs without selling_characterization (backward compat)
+        guidance = (
+            "RESEARCH-SUGGESTED SCENES — for lifestyle/ambiance/sensory products "
+            "(candles, diffusers, food, skincare, etc.) these are strong candidates for "
+            "lifestyle_context shots showing the product in its natural environment. "
+            "Use your judgment based on the script's throughline:"
+        )
+
+    lines = ["", guidance]
+    for f in facts:
+        lines.append(f"- ({f.get('category', '')}) {f.get('claim', '')}")
+    return "\n".join(lines) + "\n"
+
+
 def _build_call_b_system_prompt(
     hero_max_duration_sec: float = HERO_SHOT_MAX_DURATION_SEC,
     hook_implies_person: bool = False,
     has_visual_direction: bool = False,
     human_affordance: bool = False,
     approved_props: list[str] | None = None,
+    research_scene_facts: Optional[list] = None,
+    product_type: str = "",
+    selling_characterization: str = "",
 ) -> str:
+    _selling_context = (
+        f"SELLING CONTEXT: this is a {product_type}. "
+        f"Selling characterization: {selling_characterization} "
+        f"Use this to sharpen the SWAP TEST — a shot that works for any similar "
+        f"product regardless of what actually sells THIS one is too generic.\n\n"
+        if (product_type or selling_characterization) else ""
+    )
     hook_structure_note = (
         """This script's hook beat establishes a person in a specific moment (the
 winning script's own opening line names/implies them). Open on shot_type
@@ -866,7 +926,7 @@ affordance rubric below supports one, never every shot."""
         f"Do not introduce other props or objects not on this list.\n"
         if approved_props else ""
     )
-    return f"""{vda_note}{props_constraint}You are a cinematographer turning already-justified shots into concrete
+    return f"""{vda_note}{props_constraint}{_selling_context}You are a cinematographer turning already-justified shots into concrete
 video-generation briefs. Each shot's grounding (its exact script quote + the real
 product fact + the treatment beat it realizes) is FIXED and given to you -- do not
 change it. Your job is only to choose how the camera realizes it.
@@ -990,7 +1050,7 @@ phrasing discipline, on top of the description rule above:
   drift -- orbit/rack-focus moves are neutralized to static downstream).
 
 {_AFFORDANCE_RUBRIC}
-
+{_research_scene_block(research_scene_facts, selling_characterization)}
 SWAP TEST — before finalizing each shot ask: if this product were replaced by a
 category competitor, would this exact shot still work? If yes, the shot is too
 generic -- change the camera_move/framing/description until it is specific to THIS
@@ -1230,6 +1290,9 @@ async def generate_shot_list(
     visual_direction: Optional[VisualDirection] = None,
     client: Optional[AsyncOpenAI] = None,
     approved_props: list[str] | None = None,
+    research_scene_facts: Optional[list] = None,
+    product_type: str = "",
+    selling_characterization: str = "",
 ) -> list[Shot]:
     """Run the Shot-List Agent: Call A -> validate (-> one bounded Call A re-prompt
     -> per-shot treatment fallback) -> Call B -> assemble -> structural validate.
@@ -1348,6 +1411,9 @@ async def generate_shot_list(
             human_affordance=human_use_suits_product(product_truths),
             visual_direction=visual_direction,
             approved_props=approved_props,
+            research_scene_facts=research_scene_facts,
+            product_type=product_type,
+            selling_characterization=selling_characterization,
         )
         return shots
     finally:
@@ -1366,6 +1432,9 @@ async def _run_call_b(
     human_affordance: bool = False,
     visual_direction: Optional[VisualDirection] = None,
     approved_props: list[str] | None = None,
+    research_scene_facts: Optional[list] = None,
+    product_type: str = "",
+    selling_characterization: str = "",
 ) -> list[Shot]:
     """Call B + assembly + structural validation, with one bounded Call B retry
     if the assembled list fails structural validation (§5.6 repair posture) OR
@@ -1387,7 +1456,7 @@ async def _run_call_b(
     messages = [
         {
             "role": "system",
-            "content": _build_call_b_system_prompt(hero_max, hook_implies_person, has_visual_direction=visual_direction is not None, human_affordance=human_affordance, approved_props=approved_props),
+            "content": _build_call_b_system_prompt(hero_max, hook_implies_person, has_visual_direction=visual_direction is not None, human_affordance=human_affordance, approved_props=approved_props, research_scene_facts=research_scene_facts, product_type=product_type, selling_characterization=selling_characterization),
         },
         {"role": "user", "content": _build_call_b_user_content(justifications, truths_by_id, treatment, visual_direction)},
     ]
@@ -1478,12 +1547,21 @@ async def shot_list_agent_node(state: ProductCutState) -> dict:
     independently testable before that; that follow-up wiring has since landed.
     """
     approved_props = (state.get("seller_direction") or {}).get("approved_props")
+    _research = state.get("product_research") or {}
+    research_facts = _research.get("facts", []) if _research.get("performed") else []
+    research_scene_facts = [
+        f for f in research_facts
+        if f.get("category") in ("use_case", "visual_moment")
+    ]
     shots = await generate_shot_list(
         winning_script=state["winning_script"],
         treatment=state["treatment"],
         product_truths=state.get("product_truths", []),
         visual_direction=state.get("visual_direction"),
         approved_props=approved_props,
+        research_scene_facts=research_scene_facts,
+        product_type=state.get("product_type", ""),
+        selling_characterization=state.get("selling_characterization", ""),
     )
     trace_note = f"\n[shot_list_agent] produced {len(shots)} shot(s) via two-call justify->realize flow."
     if len(shots) < MIN_SHOTS:

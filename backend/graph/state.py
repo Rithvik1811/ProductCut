@@ -4,7 +4,46 @@ Extend additively only: add new keys, never rename/remove an existing one
 without a sync between KR and RR and a version bump in this docstring.
 Spec of record: docs/TECHNICAL_DOCUMENTATION.md section 6.
 
-version: 14
+version: 16
+  - v16: Selling-characterization context signal (improve-script-writing
+        branch). A single free-text buyer/selling synthesis threaded read-only
+        through every downstream agent so each can reason autonomously about
+        WHAT KIND of selling moment it is realizing -- replacing hardcoded
+        category rules with shared context. Five additive fields, no removals:
+          (a) ProductCutState.selling_characterization: NotRequired[str] --
+              2-4 sentence buyer/selling synthesis written ONCE by the concept
+              agent (STEP 0, before any script variant) and flowed read-only to
+              visual_direction / treatment / shot_list / body_checker /
+              tone_checker. Never a visual claim: it says WHO buys and WHY,
+              never WHAT the product looks like, and never licenses any agent to
+              assert a setting/color/scene not grounded in product_truths or
+              research_facts (the Grounding Firewall).
+          (b) ProductResearch.buyer_lens_hypothesis: NotRequired[str] -- a
+              one-sentence provisional hypothesis of the dominant buying
+              motivation, written by the classify call; seeds (does not decide)
+              the concept agent's selling_characterization and steers the
+              distill call's fact mix.
+          (c) ScriptVariant.asset_strategy semantics change (type unchanged):
+              now a free-form 4-10 word lead-asset phrase ("the ten-minute
+              wind-down ritual"), not the old binary "experience"|"physical".
+          (d) WinningScript.asset_strategy: NotRequired[str] -- copied from the
+              winning ScriptVariant by meta_critic so visual_direction /
+              treatment can read the winning script's lead asset.
+          (e) BeatVisualDirection.shot_intent: NotRequired[str] -- free-text 2-4
+              word label of what kind of selling moment a beat realizes
+              ("atmosphere / mood", "functional demo", "styled beauty reveal"),
+              written by visual_direction, read by treatment / shot_list.
+        All fields degrade cleanly when absent (empty string flows as
+        no-context), so a job that never sets selling_characterization behaves
+        byte-identically to pre-v16.
+  - v15: Experience-led grounding (script-writing pipeline). Adds ONE additive
+        field: ScriptVariant.asset_strategy: NotRequired[str] -- the concept
+        agent's per-variant lead-asset declaration ("experience" vs "physical")
+        that drives its ONE BIG IDEA throughline, so sensory/lifestyle products
+        (candles, skincare, food) can lead on scent/mood/ritual instead of
+        spec-sheet visual facts. Advisory/logging only -- no downstream consumer
+        reads it yet. No field renamed/removed; no change to the
+        product_truths -> grounding_truth_ids -> video-gen pipeline.
   - v14: Two architectural changes (feature/open-world-v2).
         PART 1 -- Cross-pollination merge REMOVED. The pipeline no longer
         stitches a hook from variant A + body from B + CTA from C. Instead the
@@ -208,8 +247,14 @@ class ResearchFact(TypedDict):
     # can never be confused by a downstream consumer.
     fact_id: str                 # "r1", "r2", ... — disjoint from truth "t*" ids
     claim: str                   # ≤25 words, checkable
+    # "audience_insight" / "trend" (category/audience research track): who buys
+    # this type of product, why, for what occasions; seasonal/style trends. These
+    # are copy material for the script writer, same as the other categories. The
+    # authoritative runtime validation of these values lives in
+    # product_research_node._VALID_CATEGORIES.
     category: Literal["spec", "feature", "differentiator",
-                      "compatibility", "use_case", "visual_moment"]
+                      "compatibility", "use_case", "visual_moment",
+                      "audience_insight", "trend"]
     source_url: str
     confidence: Literal["high", "medium"]
 
@@ -222,6 +267,11 @@ class ProductResearch(TypedDict):
     performed: bool
     classification: Literal["research_needed", "skipped"]
     product_name: NotRequired[str]
+    audience_context: NotRequired[str]  # summary of target audience / buyer psychology from category research
+    # v16: one-sentence provisional hypothesis of dominant buying motivation,
+    # written by the classify call. Seeds concept_agent's selling_characterization
+    # but does not decide it.
+    buyer_lens_hypothesis: NotRequired[str]
     facts: list[ResearchFact]
     queries_used: NotRequired[list[str]]
 
@@ -244,6 +294,16 @@ class ScriptVariant(TypedDict):
     # absent/empty when no web research was performed (regression-safe -- a
     # variant with no research facts is shaped identically to pre-v13).
     grounding_research_ids: NotRequired[list[str]]
+    # v15/v16: the concept agent's declared lead-asset choice for this variant.
+    # v16 changed the semantics (type unchanged): it is now a FREE-FORM 4-10 word
+    # phrase naming what THIS variant leads with ("the ten-minute wind-down
+    # ritual", "the zippered pocket that survives a commute"), grounded in the
+    # job-level selling_characterization -- NOT the old binary "experience" vs
+    # "physical" enum. Drives the ONE BIG IDEA throughline in concept_agent's LEAD
+    # ASSET step; copied to WinningScript.asset_strategy by meta_critic and read by
+    # visual_direction / treatment. NotRequired + empty-string-safe: absent on any
+    # pre-v15 variant.
+    asset_strategy: NotRequired[str]
     beats: list[ScriptBeat]
     target_length_sec: int
 
@@ -270,6 +330,8 @@ class WinningScript(TypedDict):
     text: str
     beats: list[ScriptBeat]
     source_variant_ids: list[str]
+    # v16: copied from the winning ScriptVariant.asset_strategy by meta_critic.
+    asset_strategy: NotRequired[str]
 
 
 class DirectedBeat(TypedDict):
@@ -310,6 +372,10 @@ class BeatVisualDirection(TypedDict):
     suggested_shot_type: str
     suggested_camera_move: str
     framing_notes: str
+    # v16: free-text 2-4 word label of what kind of selling moment this beat
+    # realizes (e.g. "atmosphere / mood", "functional demo", "styled beauty
+    # reveal"). Read by treatment_agent and shot_list_agent.
+    shot_intent: NotRequired[str]
 
 
 class VisualDirection(TypedDict):
@@ -451,6 +517,7 @@ class ProductCutState(TypedDict, total=False):
     product_photos: list[str]
     seller_direction: SellerDirection
     brand_name: NotRequired[str]      # e.g. "Hydro Flask" — used in CTA and tone
+    product_type: NotRequired[str]  # plain consumer-facing name (e.g. "candle", "tote bag", "gold necklace")
     brand_url: NotRequired[str]       # e.g. "https://hydroflask.com" — fetched by brand_research_node
     brand_context: NotRequired[str]   # LLM-summarized brand identity from brand_url
 
@@ -461,6 +528,11 @@ class ProductCutState(TypedDict, total=False):
     # products. Copy/VO material only -- see the v13 changelog note for why these
     # are kept strictly separate from product_truths.
     product_research: NotRequired[ProductResearch]
+    # v16: free-text buyer/selling synthesis written once by concept_agent before
+    # any script variant. Flows read-only to every downstream agent. Never a visual
+    # claim -- does not license any agent to assert a setting, color, or scene not
+    # grounded in product_truths or research_facts.
+    selling_characterization: NotRequired[str]
     script_variants: list[ScriptVariant]
     hook_scores: NotRequired[dict[str, dict]]     # raw Hook-Checker output, consumed by meta_critic_node
     pacing_scores: NotRequired[dict[str, dict]]   # raw Pacing-Checker output

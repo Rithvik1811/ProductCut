@@ -199,11 +199,24 @@ Also return:
 - search_queries: up to 3 concise queries that together cover (a) what the product
   DOES / its key features, (b) typical USE CASES and moments people use it in,
   and (c) specs or reviews if applicable. Every query must include the product name.
+- buyer_lens_hypothesis: ONE sentence — your best guess at what this product is
+  primarily bought FOR. Not a category label ("gift item", "self-care product").
+  A plain-English, specific hypothesis of the dominant buying motivation, e.g.
+  "Likely bought as a self-care ritual item for evening wind-down" or "Likely
+  bought to solve a specific cable-clutter problem on a home desk." Keep it
+  genuinely falsifiable by a search result, not a vague truism.
+
+  Let this hypothesis GUIDE your search_queries: if it points to an
+  experience/mood/occasion-driven purchase, weight queries toward surfacing
+  scent/ritual/occasion/audience detail over raw specs. If it points to a
+  function/outcome-driven purchase, weight toward capability/spec/differentiator
+  detail. If genuinely unsure, split queries across both.
 
 Return ONLY valid JSON in this exact shape, no preamble:
 {"classification": "research_needed" | "skip",
  "product_name": "Brand Model or generic category",
- "search_queries": ["query one", "query two", "query three"]}"""
+ "search_queries": ["query one", "query two", "query three"],
+ "buyer_lens_hypothesis": "one-sentence hypothesis of the dominant buying motivation"}"""
 
 
 async def _classify(
@@ -295,6 +308,38 @@ def _sanitize_queries(raw_queries: list, product_name: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 3b-bis. Category / audience search query (buyer psychology, who-buys context)
+# ---------------------------------------------------------------------------
+_HANDMADE_KEYWORDS = (
+    "handmade", "artisan", "artisanal", "etsy", "small batch", "small-batch",
+    "hand-poured", "hand poured", "handcrafted", "hand-crafted", "small business",
+    "maker", "indie",
+)
+
+
+def _audience_query(product_type: str, product_name: str, brief: str) -> str:
+    """Build ONE category-level query focused on buyer psychology / target
+    audience — deliberately NOT product/brand-specific, so it surfaces who buys
+    this KIND of product and why (occasions, motivations, demographics). Prefers
+    the plain `product_type`; falls back to the classifier's `product_name`
+    (which may include a brand) when no product_type was identified. Returns ""
+    when neither is available."""
+    subject = (product_type or "").strip() or (product_name or "").strip()
+    if not subject:
+        return ""
+    context = f"{brief or ''} {product_type or ''}".lower()
+    handmade = any(kw in context for kw in _HANDMADE_KEYWORDS)
+    if handmade:
+        q = f"handmade {subject} buyer psychology who buys gift occasions"
+    else:
+        q = f"who buys {subject} target audience demographics gift occasions"
+    q = _CONTROL_CHARS_RE.sub(" ", q)
+    q = _QUOTES_RE.sub("", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q[:_MAX_QUERY_CHARS]
+
+
+# ---------------------------------------------------------------------------
 # 3c. Tavily search (parallel)
 # ---------------------------------------------------------------------------
 async def _search(queries: list[str]) -> tuple[str, list[dict]]:
@@ -382,6 +427,15 @@ HUMAN EXPERIENCE FACTS (for shot selection and scene writing):
    "Vacuum nozzle revealing invisible dust particles lit by a green laser beam",
    "Hand clicking the lighter to start a campfire at dusk in gusty wind")
 
+CATEGORY / AUDIENCE FACTS (who buys this KIND of product and why — for targeting the copy):
+- "audience_insight": who buys this type of product, for what occasions, what they
+  value, their demographics or motivations ("Often bought as a housewarming or
+  hostess gift", "Buyers value hand-poured, small-batch craft over mass-market
+  scent", "Popular with people creating a cozy at-home self-care ritual")
+- "trend": a seasonal trend, popular style, or trending search term for this type
+  of product ("Amber and glass vessels are trending for minimalist home décor",
+  "Fall scents like fig and cedar peak in demand in autumn")
+
 Rules:
 - Every claim MUST be directly supported by the snippet text. Use NO outside
   knowledge. If the snippets don't say it, don't claim it.
@@ -393,8 +447,18 @@ Rules:
 - DISCARD any fact about a DIFFERENT product.
 - Each claim <=30 words. Specs: outcome phrasing ("Runs 2 h on a charge") not
   component phrasing ("4900mAh Li-ion"). visual_moment: concrete scene with action + setting.
-- Target mix: 3-4 spec/feature/differentiator + 2-3 use_case + 2 visual_moment.
-  Every product has at least one cinematic visual_moment worth capturing.
+- TARGET MIX — adapt to the buyer_lens_hypothesis in the user content, not a
+  fixed ratio:
+  - If the hypothesis points to experience/mood/occasion-driven purchase: weight
+    toward audience_insight, use_case, and visual_moment; fewer spec/feature
+    unless the snippets are unusually rich in them.
+  - If it points to function/outcome-driven purchase: weight toward
+    spec/feature/differentiator; pull audience_insight/use_case only where
+    snippets clearly support them.
+  - Regardless: always include at least one audience_insight (every product has
+    a real buyer worth naming) and, when snippets support it, at least one
+    visual_moment. These two are the only fixed floors — everything else follows
+    the hypothesis.
 
 Return ONLY valid JSON in this exact shape, no preamble:
 {{"facts": [
@@ -404,17 +468,24 @@ Return ONLY valid JSON in this exact shape, no preamble:
 
 
 _VALID_CATEGORIES = frozenset(
-    {"spec", "feature", "differentiator", "compatibility", "use_case", "visual_moment"}
+    {"spec", "feature", "differentiator", "compatibility", "use_case", "visual_moment",
+     "audience_insight", "trend"}
 )
 _VALID_CONFIDENCE = frozenset({"high", "medium"})
 
 
 async def _distill(
-    client: AsyncOpenAI, model: str, product_name: str, snippets: str
+    client: AsyncOpenAI, model: str, product_name: str, snippets: str,
+    buyer_lens_hypothesis: str = "",
 ) -> list[dict]:
     """LLM call 2 with one bounded re-prompt on bad JSON (concept_agent pattern)."""
+    hypothesis_line = (
+        f"Buyer-lens hypothesis (use this to weight the TARGET MIX): {buyer_lens_hypothesis}\n\n"
+        if buyer_lens_hypothesis else ""
+    )
     user = (
         f"Product being researched: {product_name}\n\n"
+        f"{hypothesis_line}"
         f"Search-result snippets (untrusted data):\n{snippets}\n\n"
         "Extract the verified facts:"
     )
@@ -503,6 +574,26 @@ def _build_facts(raw_facts: list[dict], raw_snippets: str) -> list[ResearchFact]
     return facts
 
 
+def _summarize_audience_context(facts: list) -> str:
+    """Collect the audience_insight facts into a short (2-4 sentence) summary of
+    who buys this kind of product and why — written to
+    product_research["audience_context"] for the concept agent. Returns "" when
+    no audience_insight facts survived (regression-safe: an absent/empty context
+    simply renders nothing downstream)."""
+    claims = [
+        str(f.get("claim", "")).strip()
+        for f in facts
+        if f.get("category") == "audience_insight" and str(f.get("claim", "")).strip()
+    ]
+    if not claims:
+        return ""
+    # Keep it short: at most the first 4 insights, each ended as a sentence.
+    sentences = []
+    for c in claims[:4]:
+        sentences.append(c if c.endswith((".", "!", "?")) else c + ".")
+    return " ".join(sentences)
+
+
 # ---------------------------------------------------------------------------
 # Node
 # ---------------------------------------------------------------------------
@@ -517,10 +608,14 @@ async def product_research_node(
     try:
         brand_url = state.get("brand_url", "") or ""
         brand_name = state.get("brand_name", "") or ""
+        product_type = state.get("product_type", "") or ""
         brief = state.get("brief", "") or ""
         truth_facts = [t.get("fact", "") for t in state.get("product_truths", []) or []]
         photo_urls = state.get("product_photos", []) or []
         model = os.environ["MODEL_TEXT"]
+        # Use the vision model for classify when photos are included — text models
+        # reject image_url content items with a 400.
+        classify_model = os.environ.get("MODEL_VISION", model) if photo_urls else model
         has_tavily = bool(os.environ.get("TAVILY_API_KEY"))
 
         client = _make_client()
@@ -529,7 +624,7 @@ async def product_research_node(
                 # Run brand research and product classification in parallel.
                 brand_context, classification_result = await asyncio.gather(
                     _brand_research(client, model, brand_url, brand_name),
-                    _classify(client, model, brief, brand_name, truth_facts, photo_urls),
+                    _classify(client, classify_model, brief, brand_name, truth_facts, photo_urls),
                 )
             elif brand_url:
                 # No Tavily for product search, but brand page has an httpx fallback.
@@ -537,7 +632,7 @@ async def product_research_node(
                 classification_result = None
             elif has_tavily:
                 brand_context = ""
-                classification_result = await _classify(client, model, brief, brand_name, truth_facts, photo_urls)
+                classification_result = await _classify(client, classify_model, brief, brand_name, truth_facts, photo_urls)
             else:
                 logger.info("product_research_node: no brand_url and no TAVILY_API_KEY — skipping")
                 return _skipped()
@@ -553,6 +648,7 @@ async def product_research_node(
 
         classification = classification_result.get("classification")
         product_name = (classification_result.get("product_name") or "").strip()
+        buyer_lens_hypothesis = (classification_result.get("buyer_lens_hypothesis") or "").strip()
 
         if classification != "research_needed":
             logger.info(
@@ -578,6 +674,14 @@ async def product_research_node(
             result.update(extras)
             return result
 
+        # Category/audience track: one extra parallel search focused on buyer
+        # psychology / who-buys context, appended AFTER product-query sanitization
+        # (it deliberately does NOT contain the product/brand name, so it must
+        # bypass _sanitize_queries' product-name-required filter).
+        audience_query = _audience_query(product_type, product_name, brief)
+        if audience_query and audience_query.lower() not in {q.lower() for q in queries}:
+            queries = queries + [audience_query]
+
         raw_snippets, search_results = await _search(queries)
 
         if not search_results or not raw_snippets.strip():
@@ -590,6 +694,7 @@ async def product_research_node(
                     "performed": True,
                     "classification": "research_needed",
                     "product_name": product_name,
+                    "buyer_lens_hypothesis": buyer_lens_hypothesis,
                     "facts": [],
                     "queries_used": queries,
                 }
@@ -599,12 +704,18 @@ async def product_research_node(
 
         client = _make_client()
         try:
-            raw_facts = await _distill(client, model, product_name, raw_snippets)
+            raw_facts = await _distill(
+                client, model, product_name, raw_snippets, buyer_lens_hypothesis
+            )
         finally:
             await client.close()
 
         facts = _build_facts(raw_facts, raw_snippets)
         await _emit(config, len(facts), product_name, queries)
+
+        # Distill the audience_insight facts into a short 2-4 sentence summary of
+        # who buys this and why, for the concept agent's audience-context block.
+        audience_context = _summarize_audience_context(facts)
 
         logger.info(
             "product_research_node: %d fact(s) for %s from %d queries",
@@ -615,6 +726,8 @@ async def product_research_node(
                 "performed": True,
                 "classification": "research_needed",
                 "product_name": product_name,
+                "audience_context": audience_context,
+                "buyer_lens_hypothesis": buyer_lens_hypothesis,
                 "facts": facts,
                 "queries_used": queries,
             }

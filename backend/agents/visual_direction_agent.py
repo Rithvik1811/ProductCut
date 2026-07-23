@@ -79,9 +79,52 @@ def _build_system_prompt(
     beat_count: int,
     truth_ids: list[str],
     research_facts: Optional[list] = None,
+    selling_characterization: str = "",
+    product_type: str = "",
+    asset_strategy: str = "",
 ) -> str:
     last = beat_count - 1
     second_last = max(0, last - 1)
+    _selling_context_block = f"""
+─────────────────────────────────────────────────────
+SELLING CONTEXT
+─────────────────────────────────────────────────────
+Product: {product_type or "this product"}
+This script's lead asset: {asset_strategy or "(not specified)"}
+Selling characterization: {selling_characterization or "(not provided — reason from the script and product truths)"}
+
+─────────────────────────────────────────────────────
+SHOT INTENT — decide WHAT KIND of selling moment each beat needs
+─────────────────────────────────────────────────────
+Use the selling characterization to decide, per beat, which kind of shot
+actually sells that moment. These are EXAMPLES of shot intents, not a
+checklist — pick whichever real, grounded moment fits THIS beat:
+
+  - ATMOSPHERE / MOOD: the product shown in the environment or feeling it
+    creates. Ground this ONLY in a research use_case/visual_moment fact or a
+    truth about the product's sensory output — never invent a setting with no
+    evidence.
+  - IN-USE / FUNCTIONAL DEMO: the product doing its job, proving a capability.
+    Ground this in a human-contact truth or a research spec/feature fact.
+  - STYLED BEAUTY / CRAFT REVEAL: the product alone, its construction or
+    material quality the point — macro on glaze, stitching, a hinge. Ground
+    in construction_detail / material_character / texture truth.
+  - PROCESS / ORIGIN: how it's made or where it comes from. Only when a
+    research fact or truth actually supports showing that.
+
+For each beat: name a shot_intent (2-4 words, free text, your own label —
+not required to match the examples above) that fits WHY this beat sells
+given the characterization, THEN choose suggested_shot_type / camera_move /
+focus_moment that realize that intent.
+
+GROUNDING FIREWALL (non-negotiable): selling_characterization tells you WHY
+someone buys this — it never tells you what the product looks like or what
+scene exists. Every visible detail in focus_moment, human_action, and
+shot_type must trace to a product truth or a research use_case/visual_moment
+fact. If the characterization suggests a mood but nothing grounds a concrete
+visual, choose a STYLED BEAUTY / CRAFT REVEAL on a real truth instead of
+inventing a scene.
+"""
     # feature/open-world-v2: ONE unified HUMAN PRESENCE GUIDANCE. The model reads
     # the product truths and decides -- no keyword-gated human_affordance branch.
     human_target_note = f"""HUMAN PRESENCE GUIDANCE:
@@ -132,6 +175,9 @@ For each beat output:
   Example: "A hand grips the top handle and lifts the bag off a surface,
   the stitching briefly catching the light."
   When human_presence is "no", DO NOT include human_action in the output at all.
+- shot_intent: 2-4 word free-text label of what kind of selling moment this
+  beat realizes (e.g. "atmosphere / mood", "functional demo", "styled beauty
+  reveal"). Your own words — not required to match the examples above.
 - suggested_shot_type: describe the composition in 2-5 words (free-form — see
   SHOT TYPE GUIDANCE below). Never leave it empty.
 - suggested_camera_move: describe the camera motion in 2-4 words (free-form — see
@@ -167,6 +213,7 @@ SHOT TYPE GUIDANCE
 - CTA beat: product alone, still. suggested_shot_type should indicate CTA (e.g. "cta endcard").
 - Never stack two camera moves in one string.
 
+{_selling_context_block}
 {human_target_note}
 
 {_scene_inspiration_block(research_facts or [])}─────────────────────────────────────────────────────
@@ -182,6 +229,7 @@ Return ONLY valid JSON, no preamble or commentary:
       "focus_feature_truth_id": "t1",
       "focus_moment": "the block form emerging from soft dark",
       "human_presence": "no",
+      "shot_intent": "styled beauty reveal",
       "suggested_shot_type": "hook_hero",
       "suggested_camera_move": "push_in",
       "framing_notes": "fills frame, product center, no negative space"
@@ -192,6 +240,7 @@ Return ONLY valid JSON, no preamble or commentary:
       "focus_moment": "waxed thread seams under fingertip pressure",
       "human_presence": "yes",
       "human_action": "A hand presses the front pocket flap, thumb tracing the bar-tack stitching along the top edge.",
+      "shot_intent": "functional demo",
       "suggested_shot_type": "product_in_hand",
       "suggested_camera_move": "static",
       "framing_notes": "tight enough to see thread texture and individual stitch spacing"
@@ -271,6 +320,7 @@ def _fallback_bvd(beat_index: int, truth_ids: list[str], is_last: bool) -> BeatV
         focus_feature_truth_id=truth_ids[0] if truth_ids else "t1",
         focus_moment="product clearly in frame",
         human_presence="no",
+        shot_intent="",
         suggested_shot_type="cta_endcard" if is_last else "macro_detail",
         suggested_camera_move="static",
         framing_notes="fills_frame, neutral",
@@ -282,6 +332,9 @@ async def generate_visual_direction(
     product_truths: list[ProductTruth],
     client: Optional[AsyncOpenAI] = None,
     research_facts: Optional[list] = None,
+    selling_characterization: str = "",
+    product_type: str = "",
+    asset_strategy: str = "",
 ) -> VisualDirection:
     """Run the Visual Direction Agent: one LLM call, one bounded re-prompt on
     validation failure, then per-beat fallback for anything still invalid.
@@ -309,7 +362,12 @@ async def generate_visual_direction(
         f"Product truths:\n{_format_truths(product_truths)}"
     )
 
-    system_prompt = _build_system_prompt(beat_count, truth_ids, research_facts)
+    system_prompt = _build_system_prompt(
+        beat_count, truth_ids, research_facts,
+        selling_characterization=selling_characterization,
+        product_type=product_type,
+        asset_strategy=asset_strategy,
+    )
 
     try:
         messages = [
@@ -417,6 +475,7 @@ async def generate_visual_direction(
                 focus_feature_truth_id=fid,
                 focus_moment=(entry.get("focus_moment") or "").strip() or "product clearly in frame",
                 human_presence=hp,  # type: ignore[arg-type]
+                shot_intent=(entry.get("shot_intent") or "").strip(),
                 suggested_shot_type=stype,
                 suggested_camera_move=cmove,
                 framing_notes=(entry.get("framing_notes") or "").strip() or "fills_frame, neutral",
@@ -451,6 +510,9 @@ async def visual_direction_agent_node(state: ProductCutState) -> dict:
         winning_script=state["winning_script"],
         product_truths=state.get("product_truths", []),
         research_facts=scene_facts,
+        selling_characterization=state.get("selling_characterization", ""),
+        product_type=state.get("product_type", ""),
+        asset_strategy=(state.get("winning_script") or {}).get("asset_strategy", ""),
     )
     human_beats = sum(1 for b in vd["beat_visual_directions"] if b["human_presence"] == "yes")
     trace_note = (

@@ -197,6 +197,13 @@ class BodyCheckResult(BaseModel):
     )
     promise_payoff_match: StrictBool
     emotional_trigger_landed: StrictBool
+    # Number of BODY beats that are pure physical-attribute statements with no
+    # stated viewer benefit/consequence ("the glass sits on your table",
+    # "melts evenly", "comes in coral stripes"). Default 0 so an older model
+    # response that omits the field still validates; the STEP 4b prompt section
+    # instructs the model to populate it. >= 2 caps completion_score at 3 (see
+    # _apply_hard_cap) -- spec-sheet copy is a structural failure of the body.
+    attribute_inventory_beat_count: int = Field(default=0, ge=0)
     justification: str = Field(..., min_length=1)
 
     @field_validator("redundant_beat_pairs")
@@ -230,6 +237,12 @@ You are a creative director doing a COLD read of the BODY of a short-form video 
 script — the beats between the opening hook and the closing CTA. You did not write \
 it. Your job is to judge whether the middle of the script is actually doing its \
 work, and return an integer completion_score from 1 to 5 per variant.
+
+You are also given this product's SELLING CHARACTERIZATION: who buys it and \
+what moment/feeling/outcome they are paying for. Use it ONLY to calibrate \
+STEP 4b (Attribute Inventory) below — it never changes STEPS 1/2/3/5's \
+structural judgment (redundancy, promise-payoff, throughline, trigger fidelity \
+apply identically regardless of product).
 
 You score FOUR things. Walk through these diagnostic steps explicitly for each variant \
 before you score:
@@ -270,6 +283,40 @@ second benefit") — a throughline violation. CALIBRATION: a beat that REFRAMES 
 promise (e.g. the same price argument expressed as per-hour math) is throughline-CONSISTENT \
 and is NOT a violation — do not flag legitimate reframes.
 
+STEP 4b — ATTRIBUTE INVENTORY CHECK (calibrated to the selling \
+characterization).
+For each body beat, ask: does this beat state a viewer-facing consequence, \
+benefit, or emotional payoff — or EARN one directly? Or does it merely \
+describe a physical property with no stated OR earned meaning for the viewer?
+
+CALIBRATION — read the selling_characterization in the user content first:
+- If it says the buyer is paying for a FEELING, MOOD, RITUAL, or SENSORY \
+EXPERIENCE, then a vivid, SPECIFIC sensory/atmospheric description of that \
+exact experience ALREADY IS the benefit — it does not need an additional \
+"so you can..." clause. "The room smells like fig and cedar within a minute" \
+is NOT an attribute-inventory beat for a product bought for how it makes a \
+room feel — the sensation IS the payoff.
+- If it says the buyer is paying for a FUNCTIONAL OUTCOME (cables that stop \
+tangling, a bag that survives a commute), then a physical description with \
+no stated functional consequence IS evasion — "woven nylon strap" with \
+nothing about what it DOES for the person counts as attribute-inventory \
+even if the language sounds polished.
+- The test either way: could a viewer answer "so what does this mean for me" \
+after hearing ONLY that line? If the answer is baked into the sensory image \
+itself (atmosphere/ritual product), yes. If the line just names a component \
+or material disconnected from the outcome the buyer wants, no.
+Also flag PRODUCT-TITLE DUMP beats: a beat whose grammatical subject is a \
+multi-word product listing title or brand + category label, paired with a generic \
+descriptor ("fits perfectly", "works great", "looks amazing"), ALWAYS counts as \
+an attribute_inventory beat even if the descriptor technically implies a viewer \
+consequence. The consequence is generic and unearned — the viewer cannot tell WHY \
+or what specifically that means for them. On-voice copy states the specific \
+consequence directly without front-loading the product name.
+
+Count the body beats that fail either test in `attribute_inventory_beat_count`. \
+If the count is >= 2, the completion_score is capped at 3 (spec-sheet copy is \
+a structural failure of the body).
+
 STEP 5 — EMOTIONAL-TRIGGER FIDELITY.
 The declared trigger is one of: curiosity, recognition, FOMO, tribal identity, \
 transformation/aspiration, relief. Mentally STRIP all emotion-labeling words ("amazing", \
@@ -287,8 +334,9 @@ same-label pairs); one clear argument; trigger earned WITHOUT relying on labels.
 trigger is earned only generically (not specific to this product).
 - 1 = no payoff / unclosed loop, OR two or more redundant pairs, OR a competing claim, OR \
 the trigger is merely asserted/labeled.
-HARD CAP: if `promise_payoff_match` is false OR `emotional_trigger_landed` is false, the \
-completion_score MUST NOT exceed 3, regardless of everything else.
+HARD CAP: if `promise_payoff_match` is false OR `emotional_trigger_landed` is false OR \
+`attribute_inventory_beat_count` >= 2, the completion_score MUST NOT exceed 3, regardless \
+of everything else.
 
 CALIBRATED EXEMPLARS (learn the boundary from these):
 - Promise-payoff. Hook "Your coffee is cold in 12 minutes. Mine isn't."
@@ -318,9 +366,11 @@ name the curiosity/relief mismatch, even though the writing is good.
 Return ONLY a JSON object of this exact shape:
 {"results": [{"variant_id": "<id>", "completion_score": <int 1-5>, \
 "redundant_beat_pairs": [[<i>, <j>], ...], "promise_payoff_match": <true|false>, \
-"emotional_trigger_landed": <true|false>, "justification": "<2-4 sentences: the \
+"emotional_trigger_landed": <true|false>, "attribute_inventory_beat_count": <int >= 0>, \
+"justification": "<2-4 sentences: the \
 one-sentence argument you extracted, the hook promise and whether the body paid it off, \
-any redundant pairs and your ruling on each flagged candidate, and the trigger verdict>"}]}
+any redundant pairs and your ruling on each flagged candidate, the trigger verdict, and \
+any pure attribute-inventory beats counted>"}]}
 Include exactly one entry per variant. Booleans MUST be real JSON booleans, never \
 strings. `redundant_beat_pairs` MUST use the beat index values given (an empty list if \
 none). No prose outside the JSON.\
@@ -407,21 +457,27 @@ def _validate_results(
 def _apply_hard_cap(result: BodyCheckResult) -> BodyCheckResult:
     """Enforce the §5.4.3 hard cap deterministically, not just via the prompt.
 
-    "promise_payoff_match=false OR emotional_trigger_landed=false caps the score
-    at 3." Instructing the model is necessary but not sufficient — an LLM can
-    still emit the self-contradiction (score 5 with promise_payoff_match false).
-    Because the cap is a *rule*, not a judgment, we clamp it in code (Pacing-Checker
-    philosophy: mechanical guarantees over sampling variance) and log when we do.
-    Only the score is touched; the model's justification is left as written.
+    "promise_payoff_match=false OR emotional_trigger_landed=false OR
+    attribute_inventory_beat_count>=2 caps the score at 3." Instructing the model
+    is necessary but not sufficient — an LLM can still emit the self-contradiction
+    (score 5 with promise_payoff_match false, or score 5 with two attribute-
+    inventory beats). Because the cap is a *rule*, not a judgment, we clamp it in
+    code (Pacing-Checker philosophy: mechanical guarantees over sampling variance)
+    and log when we do. Only the score is touched; the justification is left as
+    written.
     """
-    if (not result.promise_payoff_match or not result.emotional_trigger_landed) and (
-        result.completion_score > 3
-    ):
+    cap_triggers = (
+        not result.promise_payoff_match
+        or not result.emotional_trigger_landed
+        or result.attribute_inventory_beat_count >= 2
+    )
+    if cap_triggers and result.completion_score > 3:
         logger.info(
-            "Body-Checker: clamping completion_score %d->3 (payoff=%s trigger=%s)",
+            "Body-Checker: clamping completion_score %d->3 (payoff=%s trigger=%s attr_inventory=%d)",
             result.completion_score,
             result.promise_payoff_match,
             result.emotional_trigger_landed,
+            result.attribute_inventory_beat_count,
         )
         return result.model_copy(update={"completion_score": 3})
     return result
@@ -436,6 +492,8 @@ def check_body(
     variants: list[ScriptVariant],
     product_truths: Optional[list[ProductTruth]] = None,
     *,
+    product_type: str = "",
+    selling_characterization: str = "",
     model: Optional[str] = None,
     redundancy_threshold: float = _DEFAULT_THRESHOLD,
 ) -> dict[str, dict]:
@@ -477,6 +535,8 @@ def check_body(
         "candidate_redundant_pair. product_truths are shared across all variants.\n\n"
         + json.dumps(
             {
+                "product_type": product_type,
+                "selling_characterization": selling_characterization,
                 "product_truths": product_truths or [],
                 "variants": payload,
             },
@@ -511,7 +571,11 @@ def check_body(
 async def body_checker_node(state: ProductCutState) -> dict:
     """LangGraph node wrapper. check_body is sync + blocking network I/O, so it runs via asyncio.to_thread to avoid blocking the event loop during the parallel fan-out."""
     scores = await asyncio.to_thread(
-        check_body, state["script_variants"], state.get("product_truths")
+        check_body,
+        state["script_variants"],
+        state.get("product_truths"),
+        product_type=state.get("product_type", ""),
+        selling_characterization=state.get("selling_characterization", ""),
     )
     return {"body_scores": scores}
 

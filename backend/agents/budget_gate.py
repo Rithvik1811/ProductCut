@@ -72,6 +72,7 @@ from agents.meta_critic import _waterfill
 # floor derive from each shot's own (already target-length-scaled)
 # duration_sec instead of that flat constant; see `_shot_floor_cost`.
 from agents.shot_list_agent import (
+    HUMAN_INTERACTION_SHOT_TYPES,
     MIN_SHOTS,
     MIN_SHOT_DURATION_SEC,
     is_hero_shot,

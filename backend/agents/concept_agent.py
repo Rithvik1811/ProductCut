@@ -61,6 +61,16 @@ _TIER1_CATEGORIES = frozenset({"form_factor"})
 _TIER2_CATEGORIES = frozenset({"color", "material", "texture"})
 _TIER3_CATEGORIES = frozenset({"construction_detail", "material_character"})
 
+# Experience-led grounding fix: research facts can now ALSO satisfy TIER 2 and
+# TIER 3 of the grounding mandate, so a sensory/lifestyle product (candle,
+# skincare, food) whose visual truths are all generic material/color can still
+# validate by grounding in fragrance/ritual/occasion research instead of being
+# forced to write spec-sheet copy about "the wax" or "the glass." TIER 3's
+# research alternate additionally requires confidence == "high" (the same bar
+# the COMPELLING EVIDENCE FLOOR uses on the research side).
+_TIER2_RESEARCH_CATEGORIES = frozenset({"feature", "differentiator", "audience_insight"})
+_TIER3_RESEARCH_CATEGORIES = frozenset({"differentiator", "use_case"})
+
 # Positive-Only Truths fix: imperfection-category truths are banned from
 # grounding_truth_ids BY DEFAULT -- reuses the identical keyword proxy
 # agents/product_truth_extractor.py already applies at extraction time (same
@@ -255,7 +265,29 @@ def _brand_identity_block(brand_name: str, brand_context: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _build_system_prompt(target_length_sec: int, human_use_suits: bool = False, brand_name: str = "", brand_context: str = "", research_facts: Optional[list] = None) -> str:
+def _product_identity_block(product_type: str) -> str:
+    if not product_type:
+        return ""
+    return f"""
+PRODUCT IDENTITY: This product is a {product_type}.
+- Use the word "{product_type}" (or a natural variation: "this {product_type}", "your {product_type}") at least once in the script — in the hook, transformation beat, or CTA.
+- Never describe it ONLY by its physical container or shape when you know what it is. Saying "this smooth vessel" when you mean "this candle" is a spec-sheet, not an ad.
+- A shopper searching for this product would type "{product_type}" — your script should feel like it was written for that person.
+"""
+
+
+def _audience_context_block(audience_context: str) -> str:
+    if not audience_context:
+        return ""
+    return f"""
+TARGET AUDIENCE CONTEXT (from product category research):
+{audience_context}
+
+Use this to write for a specific person, not a generic consumer. The hook should speak to their real motivation for buying this type of product — the occasion, the feeling, the problem it solves.
+"""
+
+
+def _build_system_prompt(target_length_sec: int, human_use_suits: bool = False, brand_name: str = "", brand_context: str = "", research_facts: Optional[list] = None, product_type: str = "", audience_context: str = "", buyer_lens_hypothesis: str = "") -> str:
     # human_use_suits is preserved as a parameter for future callers/analytics
     # (e.g. the Visual Direction Agent uses the same affordance signal), but no
     # longer changes the VO prompt itself -- the VO FOCUS MANDATE below applies
@@ -314,6 +346,56 @@ correct lever. The viewer is the protagonist; the product is what makes the scen
     research_schema_line = (
         '\n      "grounding_research_ids": ["r1"],' if research_facts else ""
     )
+    _selling_char_block = f"""
+STEP 0 — SELLING CHARACTERIZATION (write this ONCE, before any variant, as a
+top-level JSON field "selling_characterization"):
+
+Before writing a single script line, answer in 2-4 sentences: who actually
+buys THIS product, what moment / feeling / outcome are they paying for, and
+what does this product do in their life that nothing else quite does?
+
+Reason from: product_truths (what it visually is), research_facts (who buys
+it, when, why), the brief, seller direction, and the buyer_lens_hypothesis
+below if given:
+  buyer_lens_hypothesis: {buyer_lens_hypothesis or "(none — reason from the evidence directly)"}
+
+Be SPECIFIC to this exact product, not generic to its category:
+  Too generic: "people buy candles for ambiance"
+  Specific enough: "someone unwinding alone after a long shift, who wants the
+  ten minutes of lighting it to feel like the start of being off the clock"
+
+Do NOT force this into any fixed type (sensory / functional / gift / craft /
+aesthetic or any bucket) — most products straddle several, and the buyer's
+specific reason matters more than which bucket fits. If the evidence suggests
+two plausible buyers, commit to the one the evidence favors most strongly.
+
+This characterization is the throughline all 4 variants build ON — not
+restate verbatim, not contradict — while each variant takes its own distinct
+creative angle.
+
+SCOPE RULE: selling_characterization describes WHO buys and WHY, never WHAT
+the product looks like. It never overrides product_truths. Any visual detail
+it implies (a setting, a color, a scene) that isn't already in truths or
+research does not license you to state it as fact in any script line.
+"""
+    _asset_strategy_block = """
+LEAD ASSET — decide this PER VARIANT, grounded in your selling_characterization:
+
+Every variant leads with ONE facet of the selling_characterization. It might
+be the ritual/feeling itself, a specific capability that delivers the outcome,
+the occasion it's bought for, a construction/craft detail that proves quality,
+or a comparison to the alternative it replaces — whichever is TRUE for this
+product and which you have actual grounding evidence for.
+
+Two variants MAY lead with different facets of the SAME characterization
+(one emphasizes the ritual, another the specific capability that makes it
+possible) — that is legitimate creative distinction, not contradiction.
+
+State your choice in "asset_strategy": a short phrase (4-10 words) naming
+what THIS variant leads with — e.g. "the ten-minute wind-down ritual" or
+"the zippered pocket that survives a commute" or "proof it outlasts anything
+else on the shelf". Never a category label like "experience" or "physical".
+"""
     return f"""You are a creative director writing short-form ad video scripts ({target_length_sec}
 seconds) for e-commerce product ads.
 
@@ -333,7 +415,7 @@ these vocabularies (you may pick something else if it genuinely fits better,
 but it must still be distinct across variants):
 - Hook types: {', '.join(HOOK_TYPES)}
 - Emotional triggers: {', '.join(EMOTIONAL_TRIGGERS)}
-
+{_selling_char_block}
 Grounding (mandatory):
 - Every claim or visual detail in the script must trace back to a specific
   truth_id from the list you were given. Do not invent details not present
@@ -370,22 +452,31 @@ BEAT-LEVEL NOVELTY (mandatory -- each beat reveals something NEW):
   about the product, each from a different angle. If any two beats make the same
   point, delete one and replace it with a fact you haven't used yet.
 
-MANDATORY CATEGORY TIERS — every script variant MUST draw truths from ALL THREE tiers,
-regardless of product type:
+GROUNDING MANDATE — every script variant MUST satisfy all three of these, drawing on
+BOTH pools (visual product truths AND web-sourced research facts) as evidence:
 
-  TIER 1 — WHOLE-OBJECT IDENTITY: cite at least one truth with category "form_factor".
-  This anchors what the product IS physically. Without it, the script talks about a
-  micro-detail the viewer cannot place because they don't know what they're looking at.
+  1. PHYSICAL IDENTITY ANCHOR (always required, any product): cite at least ONE truth
+     with category "form_factor", OR name the product_type together with one orienting
+     visual detail (color/material/shape) — so the viewer immediately knows what they
+     are looking at. Without this the script floats over a product the viewer can't place.
 
-  TIER 2 — MATERIAL / SENSORY QUALITY: cite at least one truth from {{"color", "material", "texture"}}.
-  This is the emotional dimension — why the viewer wants to touch or own the product.
+  2. COMPELLING EVIDENCE FLOOR (at least 2, drawn from EITHER pool): cite at least TWO
+     specific, idiosyncratic facts from the UNION of visual truths + research facts.
+     "Specific/idiosyncratic" means:
+       - on the VISUAL side: a truth from {{"construction_detail", "material_character", "texture"}}
+         — the details a generic description of this kind of product could never predict;
+       - on the RESEARCH side: a fact from {{"differentiator", "feature", "use_case", "audience_insight"}}
+         with confidence = high — the scent, the ritual, the occasion, the real buyer.
+     These two facts do NOT both have to be visual. A candle whose only distinctive visual
+     facts are generic ("glass jar", "cream wax") can and SHOULD satisfy this floor from the
+     research side (fragrance notes, who lights it and when) instead.
 
-  TIER 3 — IDIOSYNCRATIC DIFFERENTIATOR: cite at least one truth from {{"construction_detail", "material_character"}}.
-  This is the rational "why this one over any other in its category" signal.
+  3. RESEARCH MINIMUM (only when research exists): if you were given any WEB-SOURCED
+     PRODUCT INTELLIGENCE at all, at least ONE research fact id MUST appear in
+     "grounding_research_ids". Research is not optional flavor — if it exists, use it.
 
-A script that cites truths only from the same tier FAILS — e.g., three construction_details
-(zipper + logo + stitching) with no form_factor and no color/material truth. A script missing
-any tier is INVALID regardless of how many truths it cites total.
+When NO research facts were provided, requirements 2 falls back to the visual pool alone
+and requirement 3 does not apply.
 
 PLAIN LANGUAGE MANDATE (highest priority — applies to every line of every variant):
 Write every beat line at a 6th-grade reading level. A person watching this ad should
@@ -576,11 +667,14 @@ Per-variant requirements:
   sum to exactly {target_length_sec} seconds. Each beat's "line" is the actual
   script text spoken/shown during that beat.
 
+{_asset_strategy_block}
 NARRATIVE ARC — the beat sequence is MANDATORY for every variant:
 
 ONE BIG IDEA rule: before writing a single line, decide on the single most compelling thing
 about this product — the one reason a viewer would stop and want it. Every beat serves that idea.
 A script that tries to say six things says nothing. Find the one thing; build the arc around it.
+Build it from your declared asset_strategy (the 4-10 word lead-asset phrase for this variant):
+the throughline is whatever facet of the selling_characterization that phrase names.
 
 Beat 1 -- HOOK (4-5s): Stop the scroll. Open a desire, a curiosity gap, or a "what if."
   The product may appear but is NOT explained yet. Three equally valid approaches:
@@ -614,8 +708,11 @@ Beat 3 -- PROOF (5-6s): The single hero capability that makes Beat 2 real. ONE f
 
 Beat 4 -- DEPTH (5-6s): A contrasting angle — "and it does this too."
   Introduce a DIFFERENT benefit from Beat 3. Not a rephrasing of the same fact; a genuinely
-  new thing. A second use case, a sensory intimacy, a social dimension, a versatility point.
-  The viewer should learn something they didn't know after Beat 3.
+  new thing. The viewer should learn something they didn't know after Beat 3.
+  If "audience_insight" or "trend" research facts exist, THIS IS THEIR BEAT. Who actually
+  buys this product, for what occasion, for whom as a gift, in what ritual or moment of their
+  day? Write for that specific person. This beat should make a real candle buyer / skincare
+  customer / tote bag owner feel SEEN — not like they're reading a product description.
 
 Beat 5 -- PAYOFF + CTA (4-6s): Land the big idea, then invite. Never command.
   (a) PAYOFF: echo the ONE big idea from your arc in its punchiest form (6 words or fewer).
@@ -676,9 +773,10 @@ This replaces any third-person pronoun story: the viewer is the protagonist, not
 If seller_direction includes "never_do" constraints, do not violate them in
 any variant. If mood words are present, let them bias framework/tone choice.
 
-{_research_facts_block(research_facts or [])}{_brand_identity_block(brand_name, brand_context)}Return ONLY valid JSON in this exact shape, no preamble or commentary:
+{_product_identity_block(product_type)}{_audience_context_block(audience_context)}{_research_facts_block(research_facts or [])}{_brand_identity_block(brand_name, brand_context)}Return ONLY valid JSON in this exact shape, no preamble or commentary:
 
 {{
+  "selling_characterization": "2-4 sentence characterization written once (STEP 0), shared across all variants",
   "script_variants": [
     {{
       "variant_id": "v1",
@@ -686,6 +784,7 @@ any variant. If mood words are present, let them bias framework/tone choice.
       "framework": "one of: {' | '.join(FRAMEWORKS)}",
       "hook_type": "the hook angle",
       "emotional_trigger": "the primary emotional trigger",
+      "asset_strategy": "4-10 word phrase naming what THIS variant leads with",
       "grounding_truth_ids": ["t1", "t3"],{research_schema_line}
       "beats": [
         {{"t_start": 0, "t_end": 3, "line": "the hook line"}},
@@ -1105,7 +1204,23 @@ def _rhyme_key(word: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def _missing_required_tiers(variant: dict, truths_by_id: dict) -> list[str]:
+def _missing_required_tiers(
+    variant: dict,
+    truths_by_id: dict,
+    research_categories: Optional[set] = None,
+    research_high_conf_categories: Optional[set] = None,
+) -> list[str]:
+    """Tiered grounding check, now satisfiable from EITHER pool for TIER 2/3.
+
+    `research_categories` is the set of categories of the research facts this
+    variant actually cited (in grounding_research_ids); `research_high_conf_
+    categories` is the subset of those whose confidence == "high". Both default
+    to empty, so a variant that cited no research (or a job with no research at
+    all) degrades to the original visual-only behavior — backward compatible.
+    """
+    research_categories = research_categories or set()
+    research_high_conf_categories = research_high_conf_categories or set()
+
     cited_ids = set(variant.get("grounding_truth_ids", []))
     cited_cats = {truths_by_id[tid]["category"] for tid in cited_ids if tid in truths_by_id}
     all_cats = {t["category"] for t in truths_by_id.values()}
@@ -1118,16 +1233,26 @@ def _missing_required_tiers(variant: dict, truths_by_id: dict) -> list[str]:
             "Missing TIER 1 (form_factor): script never establishes what the product IS "
             "physically — add a truth that anchors its shape, size, and overall form."
         )
-    if all_cats & _TIER2_CATEGORIES and not cited_cats & _TIER2_CATEGORIES:
+    # TIER 2 now passes on a visual color/material/texture truth OR a research
+    # feature/differentiator/audience_insight fact.
+    tier2_visual_ok = bool(cited_cats & _TIER2_CATEGORIES)
+    tier2_research_ok = bool(research_categories & _TIER2_RESEARCH_CATEGORIES)
+    if all_cats & _TIER2_CATEGORIES and not (tier2_visual_ok or tier2_research_ok):
         problems.append(
-            "Missing TIER 2 (color/material/texture): script never grounds why the product "
-            "feels premium — add a truth about its material or surface quality."
+            "Missing TIER 2 (sensory/experience quality): script never grounds why the "
+            "product is wanted — cite a color/material/texture truth OR a research fact "
+            "(feature/differentiator/audience_insight) about how it feels, smells, or who it's for."
         )
-    if all_cats & _TIER3_CATEGORIES and not cited_cats & _TIER3_CATEGORIES:
+    # TIER 3 now passes on a visual construction_detail/material_character truth
+    # OR a HIGH-confidence research differentiator/use_case fact.
+    tier3_visual_ok = bool(cited_cats & _TIER3_CATEGORIES)
+    tier3_research_ok = bool(research_high_conf_categories & _TIER3_RESEARCH_CATEGORIES)
+    if all_cats & _TIER3_CATEGORIES and not (tier3_visual_ok or tier3_research_ok):
         problems.append(
-            "Missing TIER 3 (construction_detail/material_character): script has no "
-            "idiosyncratic differentiator — add a truth about what makes THIS specific product "
-            "distinct from any other in its category."
+            "Missing TIER 3 (idiosyncratic differentiator): script has no "
+            "idiosyncratic differentiator — cite a construction_detail/material_character "
+            "truth OR a high-confidence research differentiator/use_case fact that makes "
+            "THIS specific product distinct from any other in its category."
         )
     return problems
 
@@ -1219,6 +1344,21 @@ def _single_truth_fixation_problems(beats: list[dict], truth_facts: dict[str, st
     ]
 
 
+def _product_type_missing_problem(beats: list, product_type: str) -> Optional[str]:
+    """Flag if product_type word never appears in any beat when we know what the product is."""
+    if not product_type:
+        return None
+    all_text = " ".join(
+        b.get("line", "") + " " + b.get("visual", "")
+        for b in beats
+    ).lower()
+    # Check for the product_type word or obvious root (e.g. "candle" matches "candles")
+    root = product_type.split()[-1].rstrip("s")  # last word, strip trailing s
+    if product_type.lower() not in all_text and root not in all_text:
+        return f'Product type "{product_type}" never mentioned in script. Use the actual product name naturally at least once.'
+    return None
+
+
 def _validate_variant(
     variant: dict,
     truth_categories: dict[str, str],
@@ -1226,6 +1366,9 @@ def _validate_variant(
     truth_facts: Optional[dict[str, str]] = None,
     wants_imperfection: bool = False,
     research_ids: Optional[set] = None,
+    product_type: str = "",
+    research_facts_by_id: Optional[dict] = None,
+    enforce_research_min: bool = True,
 ) -> list[str]:
     """Return a list of violation strings (empty = structurally valid).
 
@@ -1262,7 +1405,33 @@ def _validate_variant(
     # web-sourced fact -- mirrors the unknown truth-id check above. Only checks
     # when research_ids is provided; a variant citing no research is fine.
     _research_ids = research_ids or set()
+    _research_facts_by_id = research_facts_by_id or {}
     gri = variant.get("grounding_research_ids") or []
+    # Change 3: when research exists (non-empty research_ids) but the variant
+    # cited none, flag it as a re-promptable failure. enforce_research_min is
+    # turned off on the final retry pass so a variant that genuinely can't use
+    # any research fact (e.g. the product page returned nothing copy-worthy) is
+    # allowed through rather than permanently dropped.
+    if enforce_research_min and _research_ids and not gri:
+        problems.append(
+            "No research facts cited despite research being available — at least one "
+            "must be grounded (add a research fact id to grounding_research_ids)."
+        )
+    # Categories of the research facts this variant actually cited (for the
+    # tiered grounding check's research alternates). High-confidence subset is
+    # what TIER 3's research alternate requires.
+    cited_research_cats = {
+        _research_facts_by_id[r].get("category")
+        for r in gri
+        if r in _research_facts_by_id and _research_facts_by_id[r].get("category")
+    }
+    cited_research_high_conf_cats = {
+        _research_facts_by_id[r].get("category")
+        for r in gri
+        if r in _research_facts_by_id
+        and _research_facts_by_id[r].get("category")
+        and _research_facts_by_id[r].get("confidence") == "high"
+    }
     unknown_research = [
         r for r in gri if str(r).startswith("r") and r not in _research_ids
     ]
@@ -1354,13 +1523,19 @@ def _validate_variant(
         problems.extend(_person_narration_problems(beats))
         problems.extend(_rhyme_problems(beats))
         truths_by_id = {tid: {"category": cat} for tid, cat in truth_categories.items()}
-        problems.extend(_missing_required_tiers(variant, truths_by_id))
+        problems.extend(_missing_required_tiers(
+            variant, truths_by_id, cited_research_cats, cited_research_high_conf_cats,
+        ))
         if truth_facts:
             problems.extend(_single_truth_fixation_problems(beats, truth_facts))
 
         abrupt_cta_problem = _abrupt_cta_problem(beats)
         if abrupt_cta_problem:
             problems.append(abrupt_cta_problem)
+
+        product_type_problem = _product_type_missing_problem(beats, product_type)
+        if product_type_problem:
+            problems.append(product_type_problem)
 
     return problems
 
@@ -1372,6 +1547,9 @@ def _split_valid_invalid(
     truth_facts: Optional[dict[str, str]] = None,
     wants_imperfection: bool = False,
     research_ids: Optional[set] = None,
+    product_type: str = "",
+    research_facts_by_id: Optional[dict] = None,
+    enforce_research_min: bool = True,
 ) -> tuple[list[ScriptVariant], list[tuple[dict, list[str]]]]:
     """Per-variant structural check, THEN cross-variant dedup, in one pass.
 
@@ -1387,7 +1565,7 @@ def _split_valid_invalid(
     for v in variants:
         problems = _validate_variant(
             v, truth_categories, target_length_sec, truth_facts, wants_imperfection,
-            research_ids,
+            research_ids, product_type, research_facts_by_id, enforce_research_min,
         )
         if problems:
             invalid.append((v, problems))
@@ -1415,6 +1593,7 @@ def _split_valid_invalid(
                 emotional_trigger=v["emotional_trigger"],
                 grounding_truth_ids=v["grounding_truth_ids"],
                 grounding_research_ids=v.get("grounding_research_ids", []),
+                asset_strategy=v.get("asset_strategy", ""),
                 beats=v["beats"],
                 target_length_sec=target_length_sec,
             )
@@ -1483,6 +1662,10 @@ async def generate_script_variants(
     brand_name: str = "",
     brand_context: str = "",
     research_facts: Optional[list] = None,
+    product_type: str = "",
+    audience_context: str = "",
+    buyer_lens_hypothesis: str = "",
+    extras_out: Optional[dict] = None,
 ) -> list[ScriptVariant]:
     """Run the Concept Agent: one Qwen-Max call, one bounded re-prompt on failure.
 
@@ -1519,19 +1702,26 @@ async def generate_script_variants(
     research_ids = {
         f.get("fact_id") for f in (research_facts or []) if f.get("fact_id")
     }
+    # fact_id -> full fact dict, so validation can read a cited research fact's
+    # category/confidence (for the tiered grounding check's research alternates).
+    research_facts_by_id = {
+        f["fact_id"]: f for f in (research_facts or []) if f.get("fact_id")
+    }
 
     try:
         messages = [
-            {"role": "system", "content": _build_system_prompt(target_length_sec, human_bias, brand_name, brand_context, research_facts)},
+            {"role": "system", "content": _build_system_prompt(target_length_sec, human_bias, brand_name, brand_context, research_facts, product_type, audience_context, buyer_lens_hypothesis)},
             {"role": "user", "content": _build_user_content(brief, product_truths, seller_direction, brand_name, brand_context)},
         ]
 
         response_text = await create_completion(client, model=model, messages=messages, enable_thinking=True)
         parsed = _parse_json_response(response_text)
+        if extras_out is not None:
+            extras_out["selling_characterization"] = parsed.get("selling_characterization", "")
         raw_variants = parsed.get("script_variants", [])
         valid, invalid = _split_valid_invalid(
             raw_variants, truth_categories, target_length_sec, truth_facts, wants_imperfection,
-            research_ids,
+            research_ids, product_type, research_facts_by_id, enforce_research_min=True,
         )
 
         # Per spec: fewer than 4 variants is its own re-prompt trigger, even
@@ -1553,7 +1743,7 @@ async def generate_script_variants(
             retry_valid, _ = _split_valid_invalid(
                 retry_parsed.get("script_variants", []),
                 truth_categories, target_length_sec, truth_facts, wants_imperfection,
-                research_ids,
+                research_ids, product_type, research_facts_by_id, enforce_research_min=False,
             )
             # Merge: keep the already-valid variants, slot in new ones only for
             # the missing frameworks so we never discard good work.
@@ -1588,8 +1778,12 @@ async def concept_agent_node(state: ProductCutState) -> dict:
     """
     _research = state.get("product_research") or {}
     research_facts = _research.get("facts", []) if _research.get("performed") else []
+    audience_context = _research.get("audience_context", "")
+    buyer_lens_hypothesis = _research.get("buyer_lens_hypothesis", "")
+    product_type = state.get("product_type", "")
     sd = state.get("seller_direction") or {}
     target_length_sec = int(sd.get("target_length_sec") or DEFAULT_TARGET_LENGTH_SEC)
+    extras: dict = {}
     variants = await generate_script_variants(
         brief=state["brief"],
         product_truths=state.get("product_truths", []),
@@ -1598,11 +1792,26 @@ async def concept_agent_node(state: ProductCutState) -> dict:
         brand_name=state.get("brand_name", ""),
         brand_context=state.get("brand_context", ""),
         research_facts=research_facts,
+        product_type=product_type,
+        audience_context=audience_context,
+        buyer_lens_hypothesis=buyer_lens_hypothesis,
+        extras_out=extras,
     )
+    # Job-level selling characterization (STEP 0). Deterministic fallback when the
+    # model omitted it or returned something too short to be a real synthesis.
+    selling_characterization = extras.get("selling_characterization", "")
+    if not selling_characterization or len(selling_characterization.split()) < 12:
+        pt = state.get("product_type", "product")
+        ac = audience_context
+        selling_characterization = (
+            f"Buyers choose this {pt} for {ac}." if ac
+            else f"A {pt} for people who want quality they can see."
+        )
     trace_note = f"\n[concept_agent] produced {len(variants)} script variant(s)."
     if len(variants) == 1:
         trace_note += " Only 1 survived validation -- un-negotiated, Critic Chain has nothing to cross-pollinate."
     return {
         "script_variants": variants,
+        "selling_characterization": selling_characterization,
         "reasoning_trace": state.get("reasoning_trace", "") + trace_note,
     }

@@ -1005,11 +1005,16 @@ def _winning_script_from_variant(variant: ScriptVariant) -> dict:
         {"t_start": b["t_start"], "t_end": b["t_end"], "line": b["line"]}
         for b in variant.get("beats") or []
     ]
-    return {
+    winning_script_dict = {
         "text": " ".join(b["line"] for b in beats),
         "beats": beats,
         "source_variant_ids": [variant["variant_id"]],
     }
+    # v16: carry the winning variant's lead-asset phrase onto the winning script
+    # so visual_direction / treatment can read what this script leads with.
+    if variant.get("asset_strategy"):
+        winning_script_dict["asset_strategy"] = variant["asset_strategy"]
+    return winning_script_dict
 
 
 async def meta_critic_node(state: ProductCutState, config: RunnableConfig) -> dict:

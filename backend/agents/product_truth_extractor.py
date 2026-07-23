@@ -61,6 +61,20 @@ this test: "Would this make a buyer more likely to want this product?" If not, e
 You are analyzing product photos for an ad video pipeline. You will be given
 2-3 photos, numbered in the order given (photo_1, photo_2, ...).
 
+STEP 0 -- IDENTIFY, before the same-product check: answer two quick questions
+about what this product IS. These populate the copy layer (the script writer's
+plain product noun and brand mention); they are SEPARATE from the shape-only
+FORM-FACTOR ANCHOR below and do not relax its no-category-words rule.
+- product_type: the plain, everyday, consumer-facing name for what this product
+  IS -- what a shopper would type into a search bar (e.g. "soy candle", "leather
+  tote bag", "14k gold hoop earrings", "phone case"). One to four words. NOT a
+  shape description ("cylindrical glass vessel"), NOT a brand name, NOT a
+  category marketing term ("premium lifestyle accessory"). Just the ordinary
+  name for the thing.
+- brand_name_visible: read any brand name / wordmark / logo text that is legible
+  on the product or its label in the photos and copy it VERBATIM. If no brand
+  text is legible, use an empty string "".
+
 STEP 1 -- MANDATORY, before anything else: decide whether all photos show the
 SAME physical product (same item, different angles/distances is fine; a
 different item or different brand is NOT). You must answer this explicitly --
@@ -140,7 +154,10 @@ Hard rules for this fact: no category or type words of any kind (never
 "headset", "device", "gadget", "wearable", "appliance"); describe only what
 IS present -- never contrast with other objects or say what it is NOT (do not
 write "not a phone"); one sentence, 30-60 words; list this fact FIRST in
-product_truths; set its "source" to the one photo showing the product alone
+product_truths; (form_factor stays shape-only -- it feeds the video-generation
+Subject line, where a wrong object-class word would render the wrong thing;
+the plain "candle"/"tote bag" naming lives in the SEPARATE STEP 0 product_type
+field, which is the copy layer's job, not this anchor's); set its "source" to the one photo showing the product alone
 and filling the frame most completely (prefer that photo over one with props/
 context, if you must choose).
 
@@ -154,9 +171,12 @@ textiles (proof of natural fiber content). ALWAYS describe these as the buyer wo
 them — as proof of quality and authenticity — never as flaws or damage.
 
 Return ONLY valid JSON in this exact shape, no preamble or commentary. The
-first two keys are REQUIRED in every response, even when there is no mismatch:
+first four keys are REQUIRED in every response, even when there is no mismatch
+(use "" for brand_name_visible when no brand text is legible):
 
 {{
+  "product_type": "the plain consumer-facing product name (STEP 0)",
+  "brand_name_visible": "verbatim brand text from the photos, or \\"\\" if none",
   "same_product": true,
   "mismatch_reason": "",
   "product_truths": [
@@ -344,12 +364,19 @@ async def extract_product_truths(
     brief: Optional[str] = None,
     freeform: Optional[str] = None,
     client: Optional[AsyncOpenAI] = None,
+    extras_out: Optional[dict] = None,
 ) -> list[ProductTruth]:
     """Run the Product Truth Extractor: one Qwen-VL call, one bounded re-prompt on failure.
 
     Mirrors the pattern used elsewhere in the pipeline (Shot-List Agent, Treatment
     Agent): one targeted re-prompt naming the exact violation, then proceed with
     whatever passed rather than blocking the job (docs/TECHNICAL_DOCUMENTATION.md §5.2).
+
+    `extras_out`, when provided, is populated in place with the STEP 0 copy-layer
+    fields parsed from the model's JSON: "product_type" (plain consumer-facing
+    name) and "brand_name_visible" (verbatim brand text read off the photos, or
+    ""). Kept as an optional out-dict rather than a changed return type so every
+    existing caller/test that expects a bare list[ProductTruth] is unaffected.
     """
     model = os.environ["MODEL_VISION"]  # KeyError is intentional -- see module docstring
     own_client = client is None
@@ -370,6 +397,16 @@ async def extract_product_truths(
 
         response_text = await create_completion(client, model=model, messages=messages)
         parsed = _parse_json_response(response_text)
+
+        # STEP 0 copy-layer fields — captured from the first parse (they describe
+        # what the product IS and its brand, both stable across the facts re-prompt).
+        if extras_out is not None:
+            product_type = str(parsed.get("product_type", "") or "").strip()
+            brand_name_visible = str(parsed.get("brand_name_visible", "") or "").strip()
+            if product_type:
+                extras_out["product_type"] = product_type
+            if brand_name_visible:
+                extras_out["brand_name_visible"] = brand_name_visible
 
         if "same_product" not in parsed:
             # The model skipped the required field entirely -- prompt compliance
@@ -494,16 +531,28 @@ async def product_truth_extractor_node(state: ProductCutState, config: RunnableC
     generic passthrough it uses for raw LangGraph lifecycle events.
     """
     seller_direction = state.get("seller_direction") or {}
+    extras: dict = {}
     truths = await extract_product_truths(
         photo_urls=state["product_photos"],
         brief=state.get("brief"),
         freeform=seller_direction.get("freeform"),
+        extras_out=extras,
     )
     await adispatch_custom_event(
         "truth_extracted", {"truths": truths, "count": len(truths)}, config=config
     )
-    return {
+    product_type = extras.get("product_type", "")
+    brand_name_visible = extras.get("brand_name_visible", "")
+    state_updates: dict = {
         "product_truths": truths,
         "reasoning_trace": state.get("reasoning_trace", "")
         + f"\n[product_truth_extractor] extracted {len(truths)} facts.",
     }
+    if product_type:
+        state_updates["product_type"] = product_type
+        logger.info("product_truth_extractor: product_type=%r", product_type)
+    # Only set brand_name from vision if the seller didn't type one.
+    if brand_name_visible and not state.get("brand_name"):
+        state_updates["brand_name"] = brand_name_visible
+        logger.info("product_truth_extractor: brand_name auto-populated from vision=%r", brand_name_visible)
+    return state_updates

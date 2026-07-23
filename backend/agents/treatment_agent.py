@@ -110,7 +110,8 @@ def _format_visual_direction(vd: VisualDirection) -> str:
         action = f"; action: {bvd['human_action']}" if hp == "yes" and bvd.get("human_action") else ""
         lines.append(
             f"  beat {bvd['beat_index']}: [{bvd['focus_feature_truth_id']}] "
-            f"{bvd['focus_moment']} | {bvd['suggested_shot_type']} / "
+            f"{bvd['focus_moment']} | {bvd.get('shot_intent', '')} | "
+            f"{bvd['suggested_shot_type']} / "
             f"{bvd['suggested_camera_move']} | human={hp}{action}"
         )
     return "\n".join(lines)
@@ -172,8 +173,29 @@ def _hook_beat_implies_person(winning_script: WinningScript) -> bool:
 def _build_system_prompt(
     beat_count: int, implies_person: bool = False, hook_implies_person: bool = False,
     has_visual_direction: bool = False,
+    product_type: str = "", selling_characterization: str = "", asset_strategy: str = "",
 ) -> str:
     last = beat_count - 1
+    _selling_context_block = f"""
+SELLING CONTEXT — read this before choosing director_persona (reason from it,
+do not restate it verbatim in your output):
+- Product: {product_type or "this product"}
+- Lead asset for this script: {asset_strategy or "(not specified)"}
+- Selling characterization: {selling_characterization or "(not provided — infer from script and product truths)"}
+
+Your director_persona, color_story, and pacing_philosophy must be a choice a
+real director would make FOR THIS SPECIFIC PRODUCT AND BUYER — never a generic
+"modern and clean" or "premium and minimal" default that could describe any
+product in this price range. Ask: given who buys this and why, does the ad
+want to feel unhurried and intimate, or precise and confident, or playful and
+quick, or something else entirely? Your choice must be traceable to a specific
+detail in the selling characterization or a product truth — not asserted as a
+mood word with nothing behind it.
+
+When visual_direction has already assigned a shot_intent per beat, your
+director_persona and color_story should feel like the ONE aesthetic that makes
+those different shot_intents look like they belong in the same ad.
+"""
     character_anchor_field = (
         f"""
 5. character_anchor: this script implies a recurring person (a beat has them
@@ -226,7 +248,7 @@ You will receive:
 - The winning script's full text and its beats as a numbered list (numbered
   0 to {last}, in order)
 - product_truths: a list of {{truth_id, category, fact}}
-
+{_selling_context_block}
 Produce a director's treatment with:
 1. director_persona: a short description of the visual/directorial voice for
    this specific ad (e.g. "intimate, handheld warmth" vs "crisp, editorial
@@ -420,6 +442,9 @@ async def generate_treatment(
     product_truths: list[ProductTruth],
     visual_direction: Optional[VisualDirection] = None,
     client: Optional[AsyncOpenAI] = None,
+    product_type: str = "",
+    selling_characterization: str = "",
+    asset_strategy: str = "",
 ) -> Treatment:
     """Run the Treatment Agent: one Qwen-Plus call, one bounded re-prompt naming
     exactly which beats failed and why (per the shared validator), then a
@@ -459,6 +484,9 @@ async def generate_treatment(
                 "content": _build_system_prompt(
                     beat_count, implies_person, hook_implies_person,
                     has_visual_direction=visual_direction is not None,
+                    product_type=product_type,
+                    selling_characterization=selling_characterization,
+                    asset_strategy=asset_strategy,
                 ),
             },
             {"role": "user", "content": _build_user_content(winning_script, product_truths, visual_direction)},
@@ -561,6 +589,9 @@ async def treatment_agent_node(state: dict, config: RunnableConfig) -> dict:
         winning_script=state["winning_script"],
         product_truths=state.get("product_truths", []),
         visual_direction=state.get("visual_direction"),
+        product_type=state.get("product_type", ""),
+        selling_characterization=state.get("selling_characterization", ""),
+        asset_strategy=(state.get("winning_script") or {}).get("asset_strategy", ""),
     )
     fallback_count = sum(
         1 for bt in treatment["beat_treatments"] if bt["why_not_generic"] == _FALLBACK_WHY_NOT_GENERIC
